@@ -1,0 +1,22 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y curl git build-essential && rm -rf /var/lib/apt/lists/*
+
+# Install Starknet tools via starkup
+SHELL ["/bin/bash", "-c"]
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.starkup.sh | bash -s -- -y 2>&1 && \
+    echo "--- Searching for installed binaries ---" && \
+    find /root -type f -executable 2>/dev/null | head -40
+
+# Set PATH to include all possible starkup binary locations
+ENV PATH="/root/.starkup/bin:/root/.local/bin:/root/.scarb/bin:/root/.snfoundry/bin:/root/.asdf/shims:/root/.asdf/bin:${PATH}"
+ENV HOME="/root"
+
+WORKDIR /contracts
+COPY . /contracts/
+
+# Verify tools are accessible
+RUN which scarb && scarb --version && which sncast && sncast --version
+
+ENTRYPOINT ["/bin/bash"]

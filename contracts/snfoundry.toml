@@ -1,0 +1,8 @@
+[snforge]
+account = "devnet"
+
+
+[sncast.sepolia]
+account = "sepolia"
+accounts-file = "/root/.starknet_accounts/starknet_open_zeppelin_accounts.json"
+url = "https://api.cartridge.gg/x/starknet/sepolia"

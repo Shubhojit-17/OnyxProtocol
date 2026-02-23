@@ -1,0 +1,482 @@
+﻿[
+    {
+        "type":  "impl",
+        "name":  "OnyxDarkPoolImpl",
+        "interface_name":  "onyx_darkpool::IOnyxDarkPool"
+    },
+    {
+        "type":  "struct",
+        "name":  "core::integer::u256",
+        "members":  [
+                        {
+                            "name":  "low",
+                            "type":  "core::integer::u128"
+                        },
+                        {
+                            "name":  "high",
+                            "type":  "core::integer::u128"
+                        }
+                    ]
+    },
+    {
+        "type":  "enum",
+        "name":  "core::bool",
+        "variants":  [
+                         {
+                             "name":  "False",
+                             "type":  "()"
+                         },
+                         {
+                             "name":  "True",
+                             "type":  "()"
+                         }
+                     ]
+    },
+    {
+        "type":  "interface",
+        "name":  "onyx_darkpool::IOnyxDarkPool",
+        "items":  [
+                      {
+                          "type":  "function",
+                          "name":  "submit_commitment",
+                          "inputs":  [
+                                         {
+                                             "name":  "commitment_hash",
+                                             "type":  "core::felt252"
+                                         },
+                                         {
+                                             "name":  "asset_in",
+                                             "type":  "core::felt252"
+                                         },
+                                         {
+                                             "name":  "asset_out",
+                                             "type":  "core::felt252"
+                                         },
+                                         {
+                                             "name":  "encrypted_amount",
+                                             "type":  "core::felt252"
+                                         },
+                                         {
+                                             "name":  "encrypted_price",
+                                             "type":  "core::felt252"
+                                         }
+                                     ],
+                          "outputs":  [
+                                          {
+                                              "type":  "core::integer::u64"
+                                          }
+                                      ],
+                          "state_mutability":  "external"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "record_match",
+                          "inputs":  [
+                                         {
+                                             "name":  "buy_commitment_id",
+                                             "type":  "core::integer::u64"
+                                         },
+                                         {
+                                             "name":  "sell_commitment_id",
+                                             "type":  "core::integer::u64"
+                                         },
+                                         {
+                                             "name":  "matched_amount",
+                                             "type":  "core::felt252"
+                                         }
+                                     ],
+                          "outputs":  [
+                                          {
+                                              "type":  "core::integer::u64"
+                                          }
+                                      ],
+                          "state_mutability":  "external"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "settle_match",
+                          "inputs":  [
+                                         {
+                                             "name":  "match_id",
+                                             "type":  "core::integer::u64"
+                                         },
+                                         {
+                                             "name":  "proof_hash",
+                                             "type":  "core::felt252"
+                                         }
+                                     ],
+                          "outputs":  [
+
+                                      ],
+                          "state_mutability":  "external"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "vault_deposit",
+                          "inputs":  [
+                                         {
+                                             "name":  "token",
+                                             "type":  "core::starknet::contract_address::ContractAddress"
+                                         },
+                                         {
+                                             "name":  "amount",
+                                             "type":  "core::integer::u256"
+                                         }
+                                     ],
+                          "outputs":  [
+
+                                      ],
+                          "state_mutability":  "external"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "vault_withdraw",
+                          "inputs":  [
+                                         {
+                                             "name":  "token",
+                                             "type":  "core::starknet::contract_address::ContractAddress"
+                                         },
+                                         {
+                                             "name":  "amount",
+                                             "type":  "core::integer::u256"
+                                         }
+                                     ],
+                          "outputs":  [
+
+                                      ],
+                          "state_mutability":  "external"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "add_supported_token",
+                          "inputs":  [
+                                         {
+                                             "name":  "token",
+                                             "type":  "core::starknet::contract_address::ContractAddress"
+                                         }
+                                     ],
+                          "outputs":  [
+
+                                      ],
+                          "state_mutability":  "external"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "remove_supported_token",
+                          "inputs":  [
+                                         {
+                                             "name":  "token",
+                                             "type":  "core::starknet::contract_address::ContractAddress"
+                                         }
+                                     ],
+                          "outputs":  [
+
+                                      ],
+                          "state_mutability":  "external"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "get_commitment",
+                          "inputs":  [
+                                         {
+                                             "name":  "commitment_id",
+                                             "type":  "core::integer::u64"
+                                         }
+                                     ],
+                          "outputs":  [
+                                          {
+                                              "type":  "(core::felt252, core::felt252, core::felt252, core::integer::u8)"
+                                          }
+                                      ],
+                          "state_mutability":  "view"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "get_match",
+                          "inputs":  [
+                                         {
+                                             "name":  "match_id",
+                                             "type":  "core::integer::u64"
+                                         }
+                                     ],
+                          "outputs":  [
+                                          {
+                                              "type":  "(core::integer::u64, core::integer::u64, core::felt252, core::integer::u8)"
+                                          }
+                                      ],
+                          "state_mutability":  "view"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "get_vault_balance",
+                          "inputs":  [
+                                         {
+                                             "name":  "user",
+                                             "type":  "core::starknet::contract_address::ContractAddress"
+                                         },
+                                         {
+                                             "name":  "token",
+                                             "type":  "core::starknet::contract_address::ContractAddress"
+                                         }
+                                     ],
+                          "outputs":  [
+                                          {
+                                              "type":  "core::integer::u256"
+                                          }
+                                      ],
+                          "state_mutability":  "view"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "is_token_supported",
+                          "inputs":  [
+                                         {
+                                             "name":  "token",
+                                             "type":  "core::starknet::contract_address::ContractAddress"
+                                         }
+                                     ],
+                          "outputs":  [
+                                          {
+                                              "type":  "core::bool"
+                                          }
+                                      ],
+                          "state_mutability":  "view"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "get_commitment_count",
+                          "inputs":  [
+
+                                     ],
+                          "outputs":  [
+                                          {
+                                              "type":  "core::integer::u64"
+                                          }
+                                      ],
+                          "state_mutability":  "view"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "get_match_count",
+                          "inputs":  [
+
+                                     ],
+                          "outputs":  [
+                                          {
+                                              "type":  "core::integer::u64"
+                                          }
+                                      ],
+                          "state_mutability":  "view"
+                      },
+                      {
+                          "type":  "function",
+                          "name":  "get_operator",
+                          "inputs":  [
+
+                                     ],
+                          "outputs":  [
+                                          {
+                                              "type":  "core::starknet::contract_address::ContractAddress"
+                                          }
+                                      ],
+                          "state_mutability":  "view"
+                      }
+                  ]
+    },
+    {
+        "type":  "constructor",
+        "name":  "constructor",
+        "inputs":  [
+                       {
+                           "name":  "operator",
+                           "type":  "core::starknet::contract_address::ContractAddress"
+                       }
+                   ]
+    },
+    {
+        "type":  "event",
+        "name":  "onyx_darkpool::OnyxDarkPool::CommitmentSubmitted",
+        "kind":  "struct",
+        "members":  [
+                        {
+                            "name":  "commitment_id",
+                            "type":  "core::integer::u64",
+                            "kind":  "key"
+                        },
+                        {
+                            "name":  "submitter",
+                            "type":  "core::starknet::contract_address::ContractAddress",
+                            "kind":  "key"
+                        },
+                        {
+                            "name":  "commitment_hash",
+                            "type":  "core::felt252",
+                            "kind":  "data"
+                        },
+                        {
+                            "name":  "asset_in",
+                            "type":  "core::felt252",
+                            "kind":  "data"
+                        },
+                        {
+                            "name":  "asset_out",
+                            "type":  "core::felt252",
+                            "kind":  "data"
+                        }
+                    ]
+    },
+    {
+        "type":  "event",
+        "name":  "onyx_darkpool::OnyxDarkPool::MatchRecorded",
+        "kind":  "struct",
+        "members":  [
+                        {
+                            "name":  "match_id",
+                            "type":  "core::integer::u64",
+                            "kind":  "key"
+                        },
+                        {
+                            "name":  "buy_commitment_id",
+                            "type":  "core::integer::u64",
+                            "kind":  "data"
+                        },
+                        {
+                            "name":  "sell_commitment_id",
+                            "type":  "core::integer::u64",
+                            "kind":  "data"
+                        },
+                        {
+                            "name":  "matched_amount",
+                            "type":  "core::felt252",
+                            "kind":  "data"
+                        }
+                    ]
+    },
+    {
+        "type":  "event",
+        "name":  "onyx_darkpool::OnyxDarkPool::MatchSettled",
+        "kind":  "struct",
+        "members":  [
+                        {
+                            "name":  "match_id",
+                            "type":  "core::integer::u64",
+                            "kind":  "key"
+                        },
+                        {
+                            "name":  "proof_hash",
+                            "type":  "core::felt252",
+                            "kind":  "data"
+                        }
+                    ]
+    },
+    {
+        "type":  "event",
+        "name":  "onyx_darkpool::OnyxDarkPool::VaultDeposit",
+        "kind":  "struct",
+        "members":  [
+                        {
+                            "name":  "user",
+                            "type":  "core::starknet::contract_address::ContractAddress",
+                            "kind":  "key"
+                        },
+                        {
+                            "name":  "token",
+                            "type":  "core::starknet::contract_address::ContractAddress",
+                            "kind":  "key"
+                        },
+                        {
+                            "name":  "amount",
+                            "type":  "core::integer::u256",
+                            "kind":  "data"
+                        }
+                    ]
+    },
+    {
+        "type":  "event",
+        "name":  "onyx_darkpool::OnyxDarkPool::VaultWithdraw",
+        "kind":  "struct",
+        "members":  [
+                        {
+                            "name":  "user",
+                            "type":  "core::starknet::contract_address::ContractAddress",
+                            "kind":  "key"
+                        },
+                        {
+                            "name":  "token",
+                            "type":  "core::starknet::contract_address::ContractAddress",
+                            "kind":  "key"
+                        },
+                        {
+                            "name":  "amount",
+                            "type":  "core::integer::u256",
+                            "kind":  "data"
+                        }
+                    ]
+    },
+    {
+        "type":  "event",
+        "name":  "onyx_darkpool::OnyxDarkPool::TokenAdded",
+        "kind":  "struct",
+        "members":  [
+                        {
+                            "name":  "token",
+                            "type":  "core::starknet::contract_address::ContractAddress",
+                            "kind":  "key"
+                        }
+                    ]
+    },
+    {
+        "type":  "event",
+        "name":  "onyx_darkpool::OnyxDarkPool::TokenRemoved",
+        "kind":  "struct",
+        "members":  [
+                        {
+                            "name":  "token",
+                            "type":  "core::starknet::contract_address::ContractAddress",
+                            "kind":  "key"
+                        }
+                    ]
+    },
+    {
+        "type":  "event",
+        "name":  "onyx_darkpool::OnyxDarkPool::Event",
+        "kind":  "enum",
+        "variants":  [
+                         {
+                             "name":  "CommitmentSubmitted",
+                             "type":  "onyx_darkpool::OnyxDarkPool::CommitmentSubmitted",
+                             "kind":  "nested"
+                         },
+                         {
+                             "name":  "MatchRecorded",
+                             "type":  "onyx_darkpool::OnyxDarkPool::MatchRecorded",
+                             "kind":  "nested"
+                         },
+                         {
+                             "name":  "MatchSettled",
+                             "type":  "onyx_darkpool::OnyxDarkPool::MatchSettled",
+                             "kind":  "nested"
+                         },
+                         {
+                             "name":  "VaultDeposit",
+                             "type":  "onyx_darkpool::OnyxDarkPool::VaultDeposit",
+                             "kind":  "nested"
+                         },
+                         {
+                             "name":  "VaultWithdraw",
+                             "type":  "onyx_darkpool::OnyxDarkPool::VaultWithdraw",
+                             "kind":  "nested"
+                         },
+                         {
+                             "name":  "TokenAdded",
+                             "type":  "onyx_darkpool::OnyxDarkPool::TokenAdded",
+                             "kind":  "nested"
+                         },
+                         {
+                             "name":  "TokenRemoved",
+                             "type":  "onyx_darkpool::OnyxDarkPool::TokenRemoved",
+                             "kind":  "nested"
+                         }
+                     ]
+    }
+]

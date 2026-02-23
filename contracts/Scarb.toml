@@ -1,0 +1,13 @@
+[package]
+name = "onyx_darkpool"
+version = "0.1.0"
+edition = "2024_07"
+
+[dependencies]
+starknet = ">=2.11.0"
+
+[[target.starknet-contract]]
+sierra = true
+casm = true
+
+[tool.snforge]

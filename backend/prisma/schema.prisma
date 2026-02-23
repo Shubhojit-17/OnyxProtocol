@@ -1,0 +1,188 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(uuid())
+  walletAddress String   @unique
+  createdAt     DateTime @default(now())
+
+  vaultBalances        VaultBalance[]
+  orderCommitments     OrderCommitment[]
+  complianceViewingKeys ComplianceViewingKey[]
+  settings             UserSettings?
+}
+
+model UserSettings {
+  id              String  @id @default(uuid())
+  userId          String  @unique
+  darkMode        Boolean @default(true)
+  designTheme     String  @default("institutional")
+  privacyMode     Boolean @default(true)
+  gasPreference   String  @default("Standard")
+  relayer         Boolean @default(true)
+  defaultPair     String  @default("STRK / ETH")
+  notifProofVerified   Boolean @default(true)
+  notifOrderMatched    Boolean @default(true)
+  notifVaultActivity   Boolean @default(true)
+  notifSystemUpdates   Boolean @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VaultBalance {
+  id              String @id @default(uuid())
+  userId          String
+  assetSymbol     String // STRK, ETH
+  publicBalance   Float  @default(0)
+  shieldedBalance Float  @default(0)
+  lockedBalance   Float  @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, assetSymbol])
+}
+
+enum OrderType {
+  BUY
+  SELL
+}
+
+enum OrderStatus {
+  CREATED
+  MATCHED
+  PROVING
+  VERIFIED
+  SETTLED
+  CANCELLED
+}
+
+model OrderCommitment {
+  id               String      @id @default(uuid())
+  userId           String
+  commitmentHash   String
+  assetIn          String
+  assetOut         String
+  orderType        OrderType
+  amount           Float       @default(0)
+  price            Float       @default(0)
+  amountEncrypted  String      @default("")
+  priceEncrypted   String      @default("")
+  status           OrderStatus @default(CREATED)
+  createdAt        DateTime    @default(now())
+  expiresAt        DateTime?
+
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  buyMatch   Match?  @relation("BuyOrder")
+  sellMatch  Match?  @relation("SellOrder")
+}
+
+enum MatchStatus {
+  PENDING
+  PROVING
+  VERIFIED
+  SETTLED
+  FAILED
+}
+
+model Match {
+  id           String      @id @default(uuid())
+  buyOrderId   String      @unique
+  sellOrderId  String      @unique
+  pair         String      @default("")
+  amount       String      @default("")
+  status       MatchStatus @default(PENDING)
+  createdAt    DateTime    @default(now())
+
+  buyOrder     OrderCommitment  @relation("BuyOrder", fields: [buyOrderId], references: [id])
+  sellOrder    OrderCommitment  @relation("SellOrder", fields: [sellOrderId], references: [id])
+  proof        Proof?
+  settlement   SettlementTx?
+  complianceViewingKeys ComplianceViewingKey[]
+}
+
+enum ProofStatus {
+  PENDING
+  GENERATED
+  VERIFIED
+  FAILED
+}
+
+model Proof {
+  id                 String      @id @default(uuid())
+  matchId            String      @unique
+  proofId            String      @default("")
+  proofStatus        ProofStatus @default(PENDING)
+  verificationTimeMs Int?
+  proofSize          String?
+  verifier           String      @default("Starknet SHARP")
+  metadataJson       String?
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+}
+
+model SettlementTx {
+  id        String   @id @default(uuid())
+  matchId   String   @unique
+  txHash    String
+  network   String   @default("testnet")
+  gasUsed   String
+  settledAt DateTime @default(now())
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+}
+
+model ComplianceViewingKey {
+  id           String   @id @default(uuid())
+  userId       String
+  matchId      String
+  viewingKey   String   @unique
+  expiresAt    DateTime
+  views        Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+}
+
+enum ActivityType {
+  PROOF_VERIFIED
+  ORDER_CREATED
+  ORDER_MATCHED
+  FUNDS_SHIELDED
+  FUNDS_UNSHIELDED
+  TRADE_SETTLED
+  VAULT_DEPOSIT
+  VAULT_WITHDRAW
+  MATCH_FOUND
+  PROOF_GENERATED
+}
+
+model ActivityEvent {
+  id        String       @id @default(uuid())
+  type      ActivityType
+  message   String
+  metadata  String?      // JSON string for extra data
+  createdAt DateTime     @default(now())
+}
+
+// Analytics snapshots (computed periodically)
+model AnalyticsSnapshot {
+  id             String   @id @default(uuid())
+  date           DateTime @default(now())
+  totalVolume    Float    @default(0)
+  shieldedVolume Float    @default(0)
+  orderCount     Int      @default(0)
+  matchCount     Int      @default(0)
+  avgProofTimeMs Float    @default(0)
+  anonymitySet   Int      @default(0)
+  tvl            Float    @default(0)
+  shieldedRatio  Float    @default(0)
+
+  @@index([date])
+}
