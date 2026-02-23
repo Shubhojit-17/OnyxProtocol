@@ -9,8 +9,11 @@ import {
 } from "react";
 import { connect, disconnect as sn_disconnect } from "@starknet-io/get-starknet";
 import type { StarknetWindowObject } from "@starknet-io/get-starknet";
-import { WalletAccount, type AccountInterface } from "starknet";
+import { WalletAccount, RpcProvider, constants, type AccountInterface } from "starknet";
 import { userApi } from "../services/api";
+
+const SEPOLIA_RPC = "https://api.cartridge.gg/x/starknet/sepolia";
+const SN_SEPOLIA = constants.StarknetChainId.SN_SEPOLIA;
 
 /* ────────────────────────────────────────────────────────
    Starknet Wallet Context for Onyx Protocol
@@ -92,10 +95,24 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         throw new Error("No wallet selected. Please install ArgentX or Braavos.");
       }
 
-      // Use the static connect helper — it requests accounts from the
-      // wallet and returns a fully-initialised WalletAccount.
+      // 1. Switch wallet to Sepolia network (important for Argent X)
+      try {
+        await selectedWallet.request({
+          type: "wallet_switchStarknetChain",
+          params: { chainId: SN_SEPOLIA },
+        });
+      } catch (switchErr: any) {
+        console.warn("[Wallet] Chain switch to Sepolia failed (may already be on Sepolia):", switchErr?.message);
+      }
+
+      // 2. Create a proper RpcProvider instance for Sepolia
+      const provider = new RpcProvider({ nodeUrl: SEPOLIA_RPC });
+
+      // 3. Connect the WalletAccount — requests accounts from the wallet
+      //    and returns a fully-initialised WalletAccount that proxies
+      //    signing through the wallet extension.
       const walletAccount = await WalletAccount.connect(
-        { nodeUrl: "https://api.cartridge.gg/x/starknet/sepolia" },
+        provider,
         selectedWallet,
       );
 
@@ -103,6 +120,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       if (!address) {
         throw new Error("No account address returned from wallet.");
       }
+
+      console.log("[Wallet] Connected:", selectedWallet.name, address);
 
       setAccount(walletAccount);
       setStarknetWallet(selectedWallet);

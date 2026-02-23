@@ -281,7 +281,30 @@ export async function vaultDepositOnChain(
     },
   ];
 
-  const result = await account.execute(calls);
+  console.log("[Starknet] Executing deposit multicall:", {
+    token: tokenSymbol,
+    tokenAddress,
+    amount: amount.toString(),
+    callsCount: calls.length,
+  });
+
+  let result;
+  try {
+    result = await account.execute(calls);
+  } catch (err: any) {
+    // Provide user-friendly error messages for common wallet errors
+    const msg = err?.message || err?.code || String(err);
+    if (msg.includes("NOT_FOUND") || msg.includes("Account not found")) {
+      throw new Error(
+        "Wallet account not found. Please make sure your wallet is on Starknet Sepolia network, " +
+        "then disconnect and reconnect your wallet."
+      );
+    }
+    if (msg.includes("rejected") || msg.includes("USER_REFUSED")) {
+      throw new Error("Transaction rejected by user.");
+    }
+    throw new Error(`Wallet error: ${msg}`);
+  }
 
   const provider = getProvider();
   await provider.waitForTransaction(result.transaction_hash);
@@ -301,13 +324,35 @@ export async function vaultWithdrawOnChain(
   const tokenAddress = TOKEN_ADDRESSES[tokenSymbol];
   if (!tokenAddress) throw new Error(`Unsupported token: ${tokenSymbol}`);
 
-  const contract = getWriteContract(account);
+  // Use multicall-style execute for withdraw (same wallet integration pattern)
   const u256Amount = cairo.uint256(amount);
+  const calls = [
+    {
+      contractAddress: CONTRACT_ADDRESS,
+      entrypoint: "vault_withdraw",
+      calldata: CallData.compile({
+        token: tokenAddress,
+        amount: u256Amount,
+      }),
+    },
+  ];
 
-  const result = await contract.invoke("vault_withdraw", [
-    tokenAddress,
-    u256Amount,
-  ]);
+  let result;
+  try {
+    result = await account.execute(calls);
+  } catch (err: any) {
+    const msg = err?.message || err?.code || String(err);
+    if (msg.includes("NOT_FOUND") || msg.includes("Account not found")) {
+      throw new Error(
+        "Wallet account not found. Please make sure your wallet is on Starknet Sepolia network, " +
+        "then disconnect and reconnect your wallet."
+      );
+    }
+    if (msg.includes("rejected") || msg.includes("USER_REFUSED")) {
+      throw new Error("Transaction rejected by user.");
+    }
+    throw new Error(`Wallet error: ${msg}`);
+  }
 
   const provider = getProvider();
   await provider.waitForTransaction(result.transaction_hash);
