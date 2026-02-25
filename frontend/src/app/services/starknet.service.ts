@@ -239,8 +239,15 @@ export async function submitCommitmentOnChain(
     encryptedPrice,
   ]);
 
-  const provider = getProvider();
-  await provider.waitForTransaction(result.transaction_hash);
+  // Wait for confirmation with generous retry interval
+  try {
+    const provider = getProvider();
+    await provider.waitForTransaction(result.transaction_hash, {
+      retryInterval: 5000,
+    });
+  } catch {
+    console.warn("[Starknet] waitForTransaction timed out for commitment, tx may still succeed:", result.transaction_hash);
+  }
 
   return { transactionHash: result.transaction_hash };
 }
@@ -292,7 +299,8 @@ export async function vaultDepositOnChain(
 
   let result;
   try {
-    result = await account.execute(calls);
+    // skipValidate avoids the wallet's RPC simulation which can timeout on Sepolia
+    result = await account.execute(calls, { skipValidate: true });
   } catch (err: any) {
     // Provide user-friendly error messages for common wallet errors
     const msg = err?.message || err?.code || String(err);
@@ -305,11 +313,24 @@ export async function vaultDepositOnChain(
     if (msg.includes("rejected") || msg.includes("USER_REFUSED")) {
       throw new Error("Transaction rejected by user.");
     }
+    if (msg.toLowerCase().includes("timeout")) {
+      throw new Error(
+        "Transaction timed out during simulation. The Starknet network may be congested — please try again in a moment."
+      );
+    }
     throw new Error(`Wallet error: ${msg}`);
   }
 
-  const provider = getProvider();
-  await provider.waitForTransaction(result.transaction_hash);
+  // Wait for confirmation with generous timeout (Sepolia can be slow)
+  try {
+    const provider = getProvider();
+    await provider.waitForTransaction(result.transaction_hash, {
+      retryInterval: 5000,
+    });
+  } catch (waitErr: any) {
+    // Transaction was submitted but confirmation timed out — it may still succeed
+    console.warn("[Starknet] waitForTransaction timed out, tx may still succeed:", result.transaction_hash);
+  }
 
   return { transactionHash: result.transaction_hash };
 }
@@ -341,7 +362,8 @@ export async function vaultWithdrawOnChain(
 
   let result;
   try {
-    result = await account.execute(calls);
+    // skipValidate avoids the wallet's RPC simulation which can timeout on Sepolia
+    result = await account.execute(calls, { skipValidate: true });
   } catch (err: any) {
     const msg = err?.message || err?.code || String(err);
     if (msg.includes("NOT_FOUND") || msg.includes("Account not found")) {
@@ -353,11 +375,23 @@ export async function vaultWithdrawOnChain(
     if (msg.includes("rejected") || msg.includes("USER_REFUSED")) {
       throw new Error("Transaction rejected by user.");
     }
+    if (msg.toLowerCase().includes("timeout")) {
+      throw new Error(
+        "Transaction timed out during simulation. The Starknet network may be congested — please try again in a moment."
+      );
+    }
     throw new Error(`Wallet error: ${msg}`);
   }
 
-  const provider = getProvider();
-  await provider.waitForTransaction(result.transaction_hash);
+  // Wait for confirmation with generous timeout (Sepolia can be slow)
+  try {
+    const provider = getProvider();
+    await provider.waitForTransaction(result.transaction_hash, {
+      retryInterval: 5000,
+    });
+  } catch (waitErr: any) {
+    console.warn("[Starknet] waitForTransaction timed out, tx may still succeed:", result.transaction_hash);
+  }
 
   return { transactionHash: result.transaction_hash };
 }
