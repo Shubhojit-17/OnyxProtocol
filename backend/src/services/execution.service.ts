@@ -288,6 +288,9 @@ export async function getMatches(walletAddress: string) {
     pair: m.pair,
     amount: m.amount,
     status: m.status,
+    isCrossPair: m.isCrossPair || false,
+    conversionRate: m.conversionRate,
+    conversionFee: m.conversionFee,
     createdAt: m.createdAt.toISOString(),
     proof: m.proof
       ? {

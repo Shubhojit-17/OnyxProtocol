@@ -50,6 +50,7 @@ export default function TradePage() {
   const [expiry, setExpiry] = useState("24h");
   const [privacyLevel, setPrivacyLevel] = useState(100);
   const [partialFill, setPartialFill] = useState(true);
+  const [crossPair, setCrossPair] = useState(false);
   const [complianceExport, setComplianceExport] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [proofState, setProofState] = useState<"idle" | "generating" | "complete">("idle");
@@ -201,6 +202,7 @@ export default function TradePage() {
         price: parseFloat(price),
         expiresAt: expiryDate.toISOString(),
         allowPartialFill: partialFill,
+        allowCrossPair: crossPair,
       });
       setCommitmentHash(order.commitmentHash);
       refreshOrders();
@@ -425,6 +427,26 @@ export default function TradePage() {
                   {partialFill && <Check className="w-3 h-3 text-white" />}
                 </div>
                 <span className="text-sm text-[#94a3b8]">Allow partial fill</span>
+              </label>
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div
+                  onClick={() => setCrossPair(!crossPair)}
+                  className={`w-5 h-5 rounded-md border flex items-center justify-center transition-all ${
+                    crossPair ? "bg-emerald-500 border-emerald-500" : "border-white/[0.15] bg-white/[0.02]"
+                  }`}
+                >
+                  {crossPair && <Check className="w-3 h-3 text-white" />}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm text-[#94a3b8]">Allow cross-pair matching</span>
+                  <div className="relative">
+                    <Info className="w-3.5 h-3.5 text-[#475569] cursor-help" />
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-3 rounded-lg bg-[#1e293b] border border-white/[0.08] text-xs text-[#94a3b8] hidden group-hover:block z-50 shadow-xl">
+                      <p className="font-medium text-white mb-1">Cross-Pair Matching</p>
+                      <p>Match across different quote assets (e.g., BUY STRK/oETH can match with SELL STRK/oSEP). Conversion uses live market rates with a 0.5% fee split equally between both parties.</p>
+                    </div>
+                  </div>
+                </div>
               </label>
               <label className="flex items-center gap-3 cursor-pointer">
                 <div

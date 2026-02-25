@@ -15,6 +15,7 @@ export async function createOrder(params: {
   commitmentHash?: string;
   expiresAt?: string;
   allowPartialFill?: boolean;
+  allowCrossPair?: boolean;
 }) {
   const user = await prisma.user.findUnique({
     where: { walletAddress: params.walletAddress },
@@ -61,6 +62,7 @@ export async function createOrder(params: {
       priceEncrypted: "████████",
       status: "CREATED",
       allowPartialFill: params.allowPartialFill ?? true,
+      allowCrossPair: params.allowCrossPair ?? false,
       expiresAt: params.expiresAt ? new Date(params.expiresAt) : null,
     },
   });
@@ -127,6 +129,7 @@ export async function listOrders(walletAddress: string) {
     isPartialFill: o.originalAmount != null && o.originalAmount !== o.amount,
     parentOrderId: o.parentOrderId,
     allowPartialFill: o.allowPartialFill,
+    allowCrossPair: o.allowCrossPair,
     price: o.price,
     status: o.status,
     commitmentHash: o.commitmentHash,

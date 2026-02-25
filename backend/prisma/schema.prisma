@@ -76,6 +76,7 @@ model OrderCommitment {
   priceEncrypted   String      @default("")
   status           OrderStatus @default(CREATED)
   allowPartialFill Boolean     @default(true)
+  allowCrossPair   Boolean     @default(false) // Allow matching across different quote assets via conversion
   originalAmount   Float?      // Original amount before partial fill
   parentOrderId    String?     // Link to parent order (for remainder orders)
   onChainId        Int?        // On-chain commitment ID from Starknet contract
@@ -104,6 +105,9 @@ model Match {
   pair         String      @default("")
   amount       String      @default("")
   status       MatchStatus @default(PENDING)
+  isCrossPair     Boolean    @default(false)  // Cross-pair match (different quote assets)
+  conversionRate  Float?     // Market rate used for quote-asset conversion
+  conversionFee   Float?     // Total conversion fee (split between buyer & seller)
   onChainMatchId  Int?       // On-chain match ID from Starknet contract
   onChainTxHash   String?    // Tx hash of the record_match call
   createdAt    DateTime    @default(now())

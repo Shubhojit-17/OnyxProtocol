@@ -15,6 +15,7 @@ import {
   getTxUrl,
   assertNetworkHealthy,
 } from "./starknet.service.js";
+import { getExchangeRate } from "./price.service.js";
 
 let matcherRunning = false;
 
@@ -179,6 +180,7 @@ async function runMatcherInner() {
             priceEncrypted: "████████",
             status: "CREATED",
             allowPartialFill: largerOrder.allowPartialFill,
+            allowCrossPair: largerOrder.allowCrossPair,
             originalAmount: rootOriginalAmount,
             parentOrderId: largerOrder.parentOrderId ?? largerOrder.id,
             expiresAt: largerOrder.expiresAt,
@@ -275,6 +277,231 @@ async function runMatcherInner() {
 
       // Trigger async proof generation immediately
       runProofPipeline(match.id);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // ── PHASE 2: Cross-pair matching ──
+  // Match orders across different quote assets (e.g., BUY STRK/oETH ↔ SELL STRK/oSEP)
+  // Both parties must opt in with allowCrossPair = true.
+  // The buyer's quote asset is converted to the seller's desired quote asset at
+  // market rate, with a 0.5% conversion fee split 50/50 between buyer and seller.
+  // ══════════════════════════════════════════════════════════════
+  const CROSS_PAIR_FEE_RATE = 0.005; // 0.5% total conversion fee
+
+  // Re-fetch remaining CREATED orders (some may have been matched in Phase 1)
+  const remainingOrders = await prisma.orderCommitment.findMany({
+    where: { status: "CREATED", allowCrossPair: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  // For cross-pair: find BUY and SELL orders that share the same base asset
+  // but have different quote assets. E.g.:
+  //   BUY  STRK/oETH → assetOut=STRK, assetIn=oETH  (wants STRK, paying oETH)
+  //   SELL STRK/oSEP → assetIn=STRK,  assetOut=oSEP  (has STRK, wants oSEP)
+  // Match condition: buyOrder.assetOut === sellOrder.assetIn (shared base)
+  //                  buyOrder.assetIn  !== sellOrder.assetOut (different quotes)
+  const crossBuys = remainingOrders.filter((o) => o.orderType === "BUY");
+  const crossSells = remainingOrders.filter((o) => o.orderType === "SELL");
+  const crossMatchedSellIds = new Set<string>();
+
+  for (const buyOrder of crossBuys) {
+    // Re-check this buy order is still CREATED
+    const freshBuy = await prisma.orderCommitment.findUnique({ where: { id: buyOrder.id } });
+    if (!freshBuy || freshBuy.status !== "CREATED") continue;
+
+    for (let si = 0; si < crossSells.length; si++) {
+      const sellOrder = crossSells[si];
+      if (crossMatchedSellIds.has(sellOrder.id)) continue;
+
+      // Re-check sell order
+      const freshSell = await prisma.orderCommitment.findUnique({ where: { id: sellOrder.id } });
+      if (!freshSell || freshSell.status !== "CREATED") {
+        crossMatchedSellIds.add(sellOrder.id);
+        continue;
+      }
+
+      // Cross-pair matching criteria:
+      // 1. Same base asset (buyer wants what seller has)
+      const buyerWants = freshBuy.assetOut;  // base asset buyer wants
+      const sellerHas = freshSell.assetIn;    // base asset seller has
+      if (buyerWants !== sellerHas) continue;
+
+      // 2. Different quote assets (this IS the cross-pair part)
+      const buyerPays = freshBuy.assetIn;     // quote asset buyer pays with
+      const sellerWants = freshSell.assetOut;  // quote asset seller wants
+      if (buyerPays === sellerWants) continue; // same-pair, already handled in Phase 1
+
+      // 3. No self-trades
+      if (freshBuy.userId === freshSell.userId) continue;
+
+      // Get market conversion rate: how much sellerWants per 1 buyerPays
+      // E.g., buyerPays=oETH, sellerWants=oSEP → rate = oETH_USD / oSEP_USD
+      const conversionRate = await getExchangeRate(buyerPays, sellerWants);
+      if (conversionRate <= 0) {
+        console.warn(`[CrossPair] Cannot get rate for ${buyerPays}→${sellerWants}, skipping`);
+        continue;
+      }
+
+      // Determine fill amount in base asset
+      const fillAmount = Math.min(freshBuy.amount, freshSell.amount);
+      const isPartialFill = freshBuy.amount !== freshSell.amount;
+
+      // Check partial fill permissions
+      if (isPartialFill) {
+        const largerOrder = freshBuy.amount > freshSell.amount ? freshBuy : freshSell;
+        if (!largerOrder.allowPartialFill) continue;
+      }
+
+      // Calculate conversion: buyer pays (fillAmount * buyPrice) in buyerPays asset
+      // This needs to be converted to sellerWants asset for the seller
+      const buyerPayment = fillAmount * freshBuy.price; // amount in buyerPays asset
+      const convertedPayment = buyerPayment * conversionRate; // amount in sellerWants asset
+      const totalFee = convertedPayment * CROSS_PAIR_FEE_RATE;
+      const feePerSide = totalFee / 2; // 0.25% each
+
+      // Seller receives: convertedPayment - seller's portion of fee
+      // Buyer's portion of fee is deducted from what they receive (less base asset)
+      // Actually: the buyer loses a bit more of their quote asset, the seller receives a bit less
+      const sellerReceivesQuote = convertedPayment - feePerSide;
+
+      console.log(
+        `[CrossPair] Match found: BUY ${fillAmount} ${buyerWants} (paying ${buyerPays}) ↔ SELL ${fillAmount} ${sellerHas} (wants ${sellerWants})\n` +
+        `  Rate: 1 ${buyerPays} = ${conversionRate.toFixed(6)} ${sellerWants}\n` +
+        `  Buyer pays: ${buyerPayment} ${buyerPays} → ${convertedPayment.toFixed(6)} ${sellerWants} (pre-fee)\n` +
+        `  Fee: ${totalFee.toFixed(6)} ${sellerWants} (${feePerSide.toFixed(6)} per side)\n` +
+        `  Seller receives: ${sellerReceivesQuote.toFixed(6)} ${sellerWants}`
+      );
+
+      // ── Handle partial fill split (same logic as Phase 1) ──
+      let remainderOrder: any = null;
+      if (isPartialFill) {
+        const largerOrder = freshBuy.amount > freshSell.amount ? freshBuy : freshSell;
+        const remainderAmount = Math.abs(freshBuy.amount - freshSell.amount);
+
+        await prisma.orderCommitment.update({
+          where: { id: largerOrder.id },
+          data: {
+            amount: fillAmount,
+            originalAmount: largerOrder.originalAmount ?? largerOrder.amount,
+          },
+        });
+
+        const rootOriginalAmount = largerOrder.originalAmount ?? largerOrder.amount;
+        remainderOrder = await prisma.orderCommitment.create({
+          data: {
+            userId: largerOrder.userId,
+            commitmentHash: generateCommitmentHash(),
+            assetIn: largerOrder.assetIn,
+            assetOut: largerOrder.assetOut,
+            orderType: largerOrder.orderType,
+            amount: remainderAmount,
+            price: largerOrder.price,
+            amountEncrypted: "████████",
+            priceEncrypted: "████████",
+            status: "CREATED",
+            allowPartialFill: largerOrder.allowPartialFill,
+            allowCrossPair: largerOrder.allowCrossPair,
+            originalAmount: rootOriginalAmount,
+            parentOrderId: largerOrder.parentOrderId ?? largerOrder.id,
+            expiresAt: largerOrder.expiresAt,
+          },
+        });
+
+        console.log(
+          `[CrossPair] Partial fill: ${largerOrder.orderType} ${rootOriginalAmount} → filled ${fillAmount}, remainder ${remainderAmount}`
+        );
+
+        wsManager.emit("order:created", {
+          orderId: remainderOrder.id,
+          shortId: shortOrderId(remainderOrder.id),
+          orderType: remainderOrder.orderType,
+          pair: remainderOrder.orderType === "BUY"
+            ? `${remainderOrder.assetOut}/${remainderOrder.assetIn}`
+            : `${remainderOrder.assetIn}/${remainderOrder.assetOut}`,
+          status: "CREATED",
+          isRemainder: true,
+          parentOrderId: remainderOrder.parentOrderId,
+          amount: remainderAmount,
+        });
+      }
+
+      // Display pair shows the cross conversion
+      const displayPair = `${buyerWants} / ${buyerPays}↔${sellerWants}`;
+
+      // Create match with cross-pair metadata
+      const match = await prisma.match.create({
+        data: {
+          buyOrderId: freshBuy.id,
+          sellOrderId: freshSell.id,
+          pair: displayPair,
+          amount: `${fillAmount}`,
+          status: "PENDING",
+          isCrossPair: true,
+          conversionRate,
+          conversionFee: totalFee,
+        },
+      });
+
+      // Update order statuses
+      await prisma.orderCommitment.updateMany({
+        where: { id: { in: [freshBuy.id, freshSell.id] } },
+        data: { status: "MATCHED" },
+      });
+
+      // Create proof record
+      await prisma.proof.create({
+        data: {
+          matchId: match.id,
+          proofId: "",
+          proofStatus: "PENDING",
+        },
+      });
+
+      const partialNote = isPartialFill ? ` (partial fill: ${fillAmount})` : "";
+      await prisma.activityEvent.create({
+        data: {
+          type: "ORDER_MATCHED",
+          message: `Cross-pair match in ${displayPair} dark pool${partialNote}`,
+          metadata: JSON.stringify({
+            matchId: match.id,
+            buyOrderId: freshBuy.id,
+            sellOrderId: freshSell.id,
+            fillAmount,
+            isPartialFill,
+            isCrossPair: true,
+            conversionRate,
+            conversionFee: totalFee,
+            buyerPays,
+            sellerWants,
+            remainderOrderId: remainderOrder?.id || null,
+          }),
+        },
+      });
+
+      wsManager.emit("order:matched", {
+        matchId: match.id,
+        pair: displayPair,
+        status: "MATCHED",
+        fillAmount,
+        isPartialFill,
+        isCrossPair: true,
+        conversionRate,
+        conversionFee: totalFee,
+      });
+
+      wsManager.emit("activity:new", {
+        type: "ORDER_MATCHED",
+        message: `Cross-pair match: ${buyerWants} (${buyerPays}↔${sellerWants})${partialNote}`,
+      });
+
+      matches.push(match.id);
+      crossMatchedSellIds.add(freshSell.id);
+
+      // Trigger proof pipeline
+      runProofPipeline(match.id);
+
+      break; // Move to next buy order
     }
   }
 
@@ -808,41 +1035,102 @@ async function settleMatch(matchId: string, proofId: string) {
   const fillAmount = parseFloat(matchData.amount) || Math.min(buyOrder.amount, sellOrder.amount);
   const tradePrice = buyOrder.price;
 
-  // --- Buyer side ---
-  // Buyer locked quote asset (assetIn). Unlock fillAmount * price, credit fillAmount of assetOut.
-  const buyerLockedAsset = buyOrder.assetIn;
-  const buyerUnlockAmount = fillAmount * tradePrice;
+  if (matchData.isCrossPair && matchData.conversionRate != null) {
+    // ═══ Cross-pair settlement ═══
+    // Buyer locked buyOrder.assetIn (their quote, e.g., oETH).
+    // Seller locked sellOrder.assetIn (base asset, e.g., STRK).
+    // Seller wants sellOrder.assetOut (their desired quote, e.g., oSEP).
+    // We convert the buyer's payment to the seller's desired quote at market rate,
+    // minus the conversion fee split 50/50.
+    const conversionRate = matchData.conversionRate;
+    const totalFee = matchData.conversionFee ?? 0;
+    const feePerSide = totalFee / 2;
 
-  await prisma.vaultBalance.upsert({
-    where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyerLockedAsset } },
-    update: { lockedBalance: { decrement: buyerUnlockAmount } },
-    create: { userId: buyOrder.userId, assetSymbol: buyerLockedAsset, publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
-  });
+    const buyerPayment = fillAmount * tradePrice; // in buyOrder.assetIn (e.g., oETH)
+    const convertedTotal = buyerPayment * conversionRate; // in sellOrder.assetOut (e.g., oSEP)
+    const sellerReceivesQuote = convertedTotal - feePerSide;
 
-  await prisma.vaultBalance.upsert({
-    where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyOrder.assetOut } },
-    update: { shieldedBalance: { increment: fillAmount } },
-    create: { userId: buyOrder.userId, assetSymbol: buyOrder.assetOut, publicBalance: 0, shieldedBalance: fillAmount, lockedBalance: 0 },
-  });
+    // Buyer's fee: deducted from base asset received
+    // Buyer gets slightly less base asset to account for their share of the fee
+    // Fee in base-asset terms: feePerSide / tradePrice (convert quote fee to base units)
+    // Actually simpler: buyer pays the full quote amount but receives fewer base tokens
+    const buyerFeeInBase = feePerSide / (tradePrice * conversionRate); // convert sellerWants fee → base
+    const buyerReceivesBase = fillAmount - buyerFeeInBase;
 
-  // --- Seller side ---
-  // Seller locked base asset (assetIn). Unlock fillAmount, credit fillAmount * price of assetOut.
-  const sellerLockedAsset = sellOrder.assetIn;
-  const sellerUnlockAmount = fillAmount;
-  const sellerReceives = fillAmount * tradePrice;
+    console.log(
+      `[Settlement] Cross-pair: buyer gets ${buyerReceivesBase.toFixed(6)} ${buyOrder.assetOut}, ` +
+      `seller gets ${sellerReceivesQuote.toFixed(6)} ${sellOrder.assetOut} ` +
+      `(rate=${conversionRate}, fee=${totalFee.toFixed(6)})`
+    );
 
-  await prisma.vaultBalance.upsert({
-    where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: sellerLockedAsset } },
-    update: { lockedBalance: { decrement: sellerUnlockAmount } },
-    create: { userId: sellOrder.userId, assetSymbol: sellerLockedAsset, publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
-  });
+    // --- Buyer side ---
+    // Unlock buyer's locked quote asset (assetIn)
+    await prisma.vaultBalance.upsert({
+      where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyOrder.assetIn } },
+      update: { lockedBalance: { decrement: buyerPayment } },
+      create: { userId: buyOrder.userId, assetSymbol: buyOrder.assetIn, publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
+    });
 
-  const paymentAsset = sellOrder.assetOut;
-  await prisma.vaultBalance.upsert({
-    where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: paymentAsset } },
-    update: { shieldedBalance: { increment: sellerReceives } },
-    create: { userId: sellOrder.userId, assetSymbol: paymentAsset, publicBalance: 0, shieldedBalance: sellerReceives, lockedBalance: 0 },
-  });
+    // Credit buyer with base asset (minus their fee share)
+    await prisma.vaultBalance.upsert({
+      where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyOrder.assetOut } },
+      update: { shieldedBalance: { increment: Math.max(0, buyerReceivesBase) } },
+      create: { userId: buyOrder.userId, assetSymbol: buyOrder.assetOut, publicBalance: 0, shieldedBalance: Math.max(0, buyerReceivesBase), lockedBalance: 0 },
+    });
+
+    // --- Seller side ---
+    // Unlock seller's locked base asset (assetIn)
+    await prisma.vaultBalance.upsert({
+      where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: sellOrder.assetIn } },
+      update: { lockedBalance: { decrement: fillAmount } },
+      create: { userId: sellOrder.userId, assetSymbol: sellOrder.assetIn, publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
+    });
+
+    // Credit seller with their desired quote asset (converted, minus their fee share)
+    await prisma.vaultBalance.upsert({
+      where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: sellOrder.assetOut } },
+      update: { shieldedBalance: { increment: Math.max(0, sellerReceivesQuote) } },
+      create: { userId: sellOrder.userId, assetSymbol: sellOrder.assetOut, publicBalance: 0, shieldedBalance: Math.max(0, sellerReceivesQuote), lockedBalance: 0 },
+    });
+
+  } else {
+    // ═══ Standard same-pair settlement ═══
+    // --- Buyer side ---
+    // Buyer locked quote asset (assetIn). Unlock fillAmount * price, credit fillAmount of assetOut.
+    const buyerLockedAsset = buyOrder.assetIn;
+    const buyerUnlockAmount = fillAmount * tradePrice;
+
+    await prisma.vaultBalance.upsert({
+      where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyerLockedAsset } },
+      update: { lockedBalance: { decrement: buyerUnlockAmount } },
+      create: { userId: buyOrder.userId, assetSymbol: buyerLockedAsset, publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
+    });
+
+    await prisma.vaultBalance.upsert({
+      where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyOrder.assetOut } },
+      update: { shieldedBalance: { increment: fillAmount } },
+      create: { userId: buyOrder.userId, assetSymbol: buyOrder.assetOut, publicBalance: 0, shieldedBalance: fillAmount, lockedBalance: 0 },
+    });
+
+    // --- Seller side ---
+    // Seller locked base asset (assetIn). Unlock fillAmount, credit fillAmount * price of assetOut.
+    const sellerLockedAsset = sellOrder.assetIn;
+    const sellerUnlockAmount = fillAmount;
+    const sellerReceives = fillAmount * tradePrice;
+
+    await prisma.vaultBalance.upsert({
+      where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: sellerLockedAsset } },
+      update: { lockedBalance: { decrement: sellerUnlockAmount } },
+      create: { userId: sellOrder.userId, assetSymbol: sellerLockedAsset, publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
+    });
+
+    const paymentAsset = sellOrder.assetOut;
+    await prisma.vaultBalance.upsert({
+      where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: paymentAsset } },
+      update: { shieldedBalance: { increment: sellerReceives } },
+      create: { userId: sellOrder.userId, assetSymbol: paymentAsset, publicBalance: 0, shieldedBalance: sellerReceives, lockedBalance: 0 },
+    });
+  }
 
   await prisma.settlementTx.create({
     data: {
@@ -866,8 +1154,16 @@ async function settleMatch(matchId: string, proofId: string) {
   await prisma.activityEvent.create({
     data: {
       type: "TRADE_SETTLED",
-      message: `Trade settled on Starknet`,
-      metadata: JSON.stringify({ matchId, txHash }),
+      message: matchData.isCrossPair
+        ? `Cross-pair trade settled on Starknet (${matchData.pair})`
+        : `Trade settled on Starknet`,
+      metadata: JSON.stringify({
+        matchId,
+        txHash,
+        isCrossPair: matchData.isCrossPair,
+        conversionRate: matchData.conversionRate,
+        conversionFee: matchData.conversionFee,
+      }),
     },
   });
 

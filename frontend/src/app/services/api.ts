@@ -94,6 +94,7 @@ export const orderApi = {
     commitmentHash?: string;
     expiresAt?: string;
     allowPartialFill?: boolean;
+    allowCrossPair?: boolean;
   }) => post<{ order: any }>("/orders/create", params),
   list: (walletAddress: string) =>
     get<{ orders: any[] }>(`/orders/list?walletAddress=${walletAddress}`),
