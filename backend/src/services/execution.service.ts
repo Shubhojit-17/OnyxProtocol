@@ -43,10 +43,21 @@ export async function getExecutionTimeline(walletAddress: string) {
 
     // Partial fill info
     const isPartialFill = o.originalAmount != null && o.originalAmount !== o.amount;
+    const isRemainder = o.parentOrderId != null;
     const baseAsset = o.orderType === 'BUY' ? o.assetOut : o.assetIn;
-    const amountLabel = isPartialFill
-      ? `${o.amount} / ${o.originalAmount} ${baseAsset} (partial)`
-      : `${o.amount} ${baseAsset}`;
+    let amountLabel: string;
+    if (isPartialFill && isRemainder) {
+      // Remainder order from a partial fill: show "6 / 10 STRK (remainder)"
+      amountLabel = `${o.amount} / ${o.originalAmount} ${baseAsset} (remainder)`;
+    } else if (isPartialFill) {
+      // Original order that was partially filled: show "4 / 10 STRK (partial)"
+      amountLabel = `${o.amount} / ${o.originalAmount} ${baseAsset} (partial)`;
+    } else if (isRemainder && o.originalAmount) {
+      // Remainder that was fully filled subsequently: show "6 / 10 STRK (remainder)"
+      amountLabel = `${o.amount} / ${o.originalAmount} ${baseAsset} (remainder)`;
+    } else {
+      amountLabel = `${o.amount} ${baseAsset}`;
+    }
 
     return {
       id: shortOrderId(o.id),

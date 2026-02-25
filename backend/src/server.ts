@@ -6,6 +6,7 @@ import rateLimit from "express-rate-limit";
 import { wsManager } from "./websocket/manager.js";
 import { runMatcher, startStuckMatchRetry } from "./services/matcher.service.js";
 import { isStarknetEnabled } from "./services/starknet.service.js";
+import prisma from "./db/prisma.js";
 
 // Routes
 import userRoutes from "./routes/user.routes.js";
@@ -100,6 +101,16 @@ server.listen(PORT, "0.0.0.0", () => {
 
   // Start periodic stuck match retry (every 30s)
   startStuckMatchRetry();
+
+  // Startup diagnostics: log open orders count
+  prisma.orderCommitment
+    .count({ where: { status: "CREATED" } })
+    .then((openCount) => {
+      if (openCount > 0) {
+        console.log(`  ⚠️  ${openCount} open order(s) in database from previous session`);
+      }
+    })
+    .catch(() => {});
 });
 
 export { app, server };

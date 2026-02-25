@@ -84,8 +84,12 @@ async function runMatcherInner() {
       buyOrder = currentBuy;
 
       // Find a sell counterparty: seller's assetIn = buyer's assetOut AND seller's assetOut = buyer's assetIn
+      // Also prevent self-trades: buyer and seller must be different users
       const sellIdx = unmatchedSells.findIndex(
-        (s) => s.assetIn === buyOrder.assetOut && s.assetOut === buyOrder.assetIn
+        (s) =>
+          s.assetIn === buyOrder.assetOut &&
+          s.assetOut === buyOrder.assetIn &&
+          s.userId !== buyOrder.userId
       );
       if (sellIdx === -1) continue;
 
@@ -135,6 +139,7 @@ async function runMatcherInner() {
         });
 
         // Create remainder order (no vault balance changes needed — original lock covers both portions)
+        const rootOriginalAmount = largerOrder.originalAmount ?? largerOrder.amount;
         remainderOrder = await prisma.orderCommitment.create({
           data: {
             userId: largerOrder.userId,
@@ -148,6 +153,7 @@ async function runMatcherInner() {
             priceEncrypted: "████████",
             status: "CREATED",
             allowPartialFill: largerOrder.allowPartialFill,
+            originalAmount: rootOriginalAmount,
             parentOrderId: largerOrder.parentOrderId ?? largerOrder.id,
             expiresAt: largerOrder.expiresAt,
           },
