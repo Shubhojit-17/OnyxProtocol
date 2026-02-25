@@ -412,43 +412,116 @@ async function failMatchAndRefund(matchId: string, reason: string) {
     data: { proofStatus: "FAILED" },
   });
 
-  // Mark orders as CANCELLED (failed)
-  await prisma.orderCommitment.updateMany({
-    where: { id: { in: [match.buyOrderId, match.sellOrderId] } },
-    data: { status: "CANCELLED" },
-  });
-
-  // ── Refund locked balances ──
   const buyOrder = match.buyOrder;
   const sellOrder = match.sellOrder;
   const fillAmount = parseFloat(match.amount) || Math.min(buyOrder.amount, sellOrder.amount);
   const tradePrice = buyOrder.price;
 
-  // Buyer: locked (fillAmount * price) of assetIn → return to shielded
-  const buyerLockAsset = buyOrder.assetIn;
-  const buyerLockAmount = fillAmount * tradePrice;
+  // ── Handle remainder orders from partial fills ──
+  // When a partial fill match fails, we need to:
+  // 1. Find the remainder order(s) that were split off
+  // 2. Cancel them and compute the total remainder amount
+  // 3. Restore the original order to (fillAmount + remainderAmount)
+  //    NOT to originalAmount, because earlier partial fills may have
+  //    already settled and reduced the lock accordingly.
+  for (const order of [buyOrder, sellOrder]) {
+    if (order.originalAmount != null && order.originalAmount !== order.amount) {
+      // This order was reduced during partial fill — find its CREATED remainders
+      const remainderOrders = await prisma.orderCommitment.findMany({
+        where: {
+          parentOrderId: order.parentOrderId ?? order.id,
+          status: "CREATED",
+          id: { not: order.id },
+        },
+      });
 
-  await prisma.vaultBalance.update({
-    where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyerLockAsset } },
-    data: {
-      lockedBalance: { decrement: buyerLockAmount },
-      shieldedBalance: { increment: buyerLockAmount },
-    },
-  }).catch((e) => console.error(`[Refund] Could not refund buyer ${buyOrder.userId}:`, e));
+      let cancelledRemainderTotal = 0;
+      for (const remainder of remainderOrders) {
+        cancelledRemainderTotal += remainder.amount;
+        await prisma.orderCommitment.update({
+          where: { id: remainder.id },
+          data: { status: "CANCELLED" },
+        });
+        console.log(`[Refund] Cancelled remainder order ${remainder.id.slice(0, 8)}... (amount=${remainder.amount})`);
+      }
 
-  // Seller: locked fillAmount of assetIn → return to shielded
-  const sellerLockAsset = sellOrder.assetIn;
-  const sellerLockAmount = fillAmount;
+      // Compute restored amount: current fill amount + all cancelled remainders
+      // This correctly handles cascaded splits where earlier fills already settled.
+      // E.g.: Original 11 → settled 2 → remainder 9 → split 3+6 → fail
+      //        restoredAmount = 3 + 6 = 9 (not 11, because 2 already settled)
+      const restoredAmount = order.amount + cancelledRemainderTotal;
 
-  await prisma.vaultBalance.update({
-    where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: sellerLockAsset } },
-    data: {
-      lockedBalance: { decrement: sellerLockAmount },
-      shieldedBalance: { increment: sellerLockAmount },
-    },
-  }).catch((e) => console.error(`[Refund] Could not refund seller ${sellOrder.userId}:`, e));
+      await prisma.orderCommitment.update({
+        where: { id: order.id },
+        data: {
+          amount: restoredAmount,
+          // Clear originalAmount — order is now a fresh order at its restored amount.
+          // If it was 9 out of an original 11 chain, it's now simply a 9 STRK order.
+          originalAmount: null,
+          parentOrderId: null,
+          status: "CREATED",
+          onChainId: null,
+          onChainTxHash: null,
+        },
+      });
+      console.log(`[Refund] Restored order ${order.id.slice(0, 8)}... to amount ${restoredAmount} (was fill=${order.amount}, remainders=${cancelledRemainderTotal})`);
 
-  console.log(`[Refund] Match ${matchId} failed — refunded ${buyerLockAmount} ${buyerLockAsset} to buyer, ${sellerLockAmount} ${sellerLockAsset} to seller`);
+      // No balance refund needed — the existing lock covers the restored amount
+      // (lock was for the pre-split amount, and we're restoring exactly to that)
+
+      // Notify frontend
+      wsManager.emit("order:created", {
+        orderId: order.id,
+        shortId: shortOrderId(order.id),
+        orderType: order.orderType,
+        pair: order.orderType === "BUY"
+          ? `${order.assetOut}/${order.assetIn}`
+          : `${order.assetIn}/${order.assetOut}`,
+        status: "CREATED",
+        amount: restoredAmount,
+        restored: true,
+      });
+    } else {
+      // Not a partial fill — just cancel and refund normally
+      await prisma.orderCommitment.update({
+        where: { id: order.id },
+        data: { status: "CANCELLED" },
+      });
+    }
+  }
+
+  // ── Refund locked balances (only for orders that were fully cancelled, not restored) ──
+  // Buyer: if restored, lock stays (order is back in pool). If cancelled, refund.
+  const buyerRestored = buyOrder.originalAmount != null && buyOrder.originalAmount !== buyOrder.amount;
+  if (!buyerRestored) {
+    const buyerLockAsset = buyOrder.assetIn;
+    const buyerLockAmount = fillAmount * tradePrice;
+    await prisma.vaultBalance.update({
+      where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyerLockAsset } },
+      data: {
+        lockedBalance: { decrement: buyerLockAmount },
+        shieldedBalance: { increment: buyerLockAmount },
+      },
+    }).catch((e) => console.error(`[Refund] Could not refund buyer ${buyOrder.userId}:`, e));
+    console.log(`[Refund] Refunded ${buyerLockAmount} ${buyerLockAsset} to buyer`);
+  }
+
+  // Seller: if restored, lock stays. If cancelled, refund.
+  const sellerRestored = sellOrder.originalAmount != null && sellOrder.originalAmount !== sellOrder.amount;
+  if (!sellerRestored) {
+    const sellerLockAsset = sellOrder.assetIn;
+    const sellerLockAmount = fillAmount;
+    await prisma.vaultBalance.update({
+      where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: sellerLockAsset } },
+      data: {
+        lockedBalance: { decrement: sellerLockAmount },
+        shieldedBalance: { increment: sellerLockAmount },
+      },
+    }).catch((e) => console.error(`[Refund] Could not refund seller ${sellOrder.userId}:`, e));
+    console.log(`[Refund] Refunded ${sellerLockAmount} ${sellerLockAsset} to seller`);
+  }
+
+  console.log(`[Refund] Match ${matchId} failed — buyerRestored=${buyerRestored}, sellerRestored=${sellerRestored}`);
 
   // Activity event
   await prisma.activityEvent.create({
