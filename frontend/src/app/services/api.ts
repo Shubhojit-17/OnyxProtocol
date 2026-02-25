@@ -56,6 +56,10 @@ export const dashboardApi = {
     const qs = params.toString();
     return get<any>(`/dashboard/overview${qs ? `?${qs}` : ""}`);
   },
+  getPriceHistory: (base: string, quote: string) =>
+    get<{ pair: string; history: { time: string; price: number }[] }>(
+      `/dashboard/price-history?base=${base}&quote=${quote}`
+    ),
 };
 
 // ─── Vault ─────────────────────────────────────────────

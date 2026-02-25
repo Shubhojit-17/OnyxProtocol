@@ -21,21 +21,13 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { motion, AnimatePresence } from "motion/react";
-import { orderApi, darkPoolApi } from "../services/api";
+import { orderApi, darkPoolApi, dashboardApi } from "../services/api";
 import { useApi } from "../hooks/useApi";
 import { useWallet } from "../hooks/useWallet";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { TRADING_PAIRS } from "../services/starknet.config";
 
-function generatePriceData(midPrice: number) {
-  if (!midPrice || midPrice === 0) return [];
-  // Generate a sine-wave chart oscillating around the exchange rate
-  const amplitude = midPrice * 0.15;
-  return Array.from({ length: 48 }, (_, i) => ({
-    time: `${Math.floor(i / 2)}:${i % 2 === 0 ? "00" : "30"}`,
-    price: midPrice + Math.sin(i * 0.3) * amplitude + (i * midPrice * 0.002),
-  }));
-}
+// Removed generatePriceData — we now fetch real data from the backend
 
 const proofMessages = [
   "Initializing FRI-domain expansion...",
@@ -81,6 +73,23 @@ export default function TradePage() {
     () => darkPoolApi.getStats(),
     []
   );
+
+  // ─── Fetch real price history for the selected pair ───
+  const [priceHistory, setPriceHistory] = useState<{ time: string; price: number }[]>([]);
+  useEffect(() => {
+    const pair = TRADING_PAIRS[selectedPairIdx];
+    let cancelled = false;
+    dashboardApi
+      .getPriceHistory(pair.base, pair.quote)
+      .then((res) => {
+        if (!cancelled) setPriceHistory(res.history || []);
+      })
+      .catch((err) => {
+        console.warn("Price history fetch failed:", err);
+        if (!cancelled) setPriceHistory([]);
+      });
+    return () => { cancelled = true; };
+  }, [selectedPairIdx]);
 
   // Listen for WS events
   useWebSocket(
@@ -559,9 +568,7 @@ export default function TradePage() {
           </div>
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={generatePriceData(
-                  poolData?.exchangeRates?.[`${TRADING_PAIRS[selectedPairIdx].base}/${TRADING_PAIRS[selectedPairIdx].quote}`] || 0
-                )}>
+              <AreaChart data={priceHistory}>
                 <defs>
                   <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#4ade80" stopOpacity={0.2} />
