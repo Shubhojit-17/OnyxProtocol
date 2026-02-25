@@ -1,0 +1,12 @@
+[phases.setup]
+nixPkgs = ["nodejs_20", "openssl"]
+cmds = ["corepack enable"]
+
+[phases.install]
+cmds = ["cd /app/backend && pnpm install --frozen-lockfile"]
+
+[phases.build]
+cmds = ["cd /app/backend && pnpm build"]
+
+[start]
+cmd = "cd /app/backend && pnpm start"
