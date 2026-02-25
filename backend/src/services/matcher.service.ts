@@ -13,6 +13,7 @@ import {
   recordMatchOnChain,
   settleMatchOnChain,
   getTxUrl,
+  assertNetworkHealthy,
 } from "./starknet.service.js";
 
 let matcherRunning = false;
@@ -508,6 +509,9 @@ async function executeProofPipeline(matchId: string) {
   if (!isStarknetEnabled()) {
     throw new Error("Starknet is not configured — on-chain settlement is required");
   }
+
+  // Check network health before starting expensive on-chain operations
+  await assertNetworkHealthy();
 
   await prisma.match.update({
     where: { id: matchId },

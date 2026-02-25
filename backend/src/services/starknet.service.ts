@@ -18,6 +18,7 @@ import { fileURLToPath } from "url";
 
 // ─── Timeout for on-chain operations ────────────────────
 const ON_CHAIN_TIMEOUT_MS = 60_000; // 60 seconds max per on-chain operation
+const NETWORK_STALE_THRESHOLD_MS = 5 * 60_000; // 5 min without a block = network halted
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -27,6 +28,38 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
       (err) => { clearTimeout(timer); reject(err); }
     );
   });
+}
+
+/**
+ * Check if the Starknet network is producing blocks.
+ * Throws a descriptive error if the network appears halted.
+ */
+export async function assertNetworkHealthy(): Promise<void> {
+  try {
+    const provider = getProvider();
+    const block = await withTimeout(
+      provider.getBlockWithTxHashes("latest"),
+      10_000,
+      "getBlockWithTxHashes"
+    );
+    const blockTimestamp = (block as any).timestamp;
+    if (!blockTimestamp) return; // can't determine — assume healthy
+
+    const ageMs = Date.now() - blockTimestamp * 1000;
+    if (ageMs > NETWORK_STALE_THRESHOLD_MS) {
+      const ageMin = Math.round(ageMs / 60_000);
+      throw new Error(
+        `[Starknet] Network appears halted — latest block is ${ageMin} min old ` +
+        `(block ${(block as any).block_number}). Starknet Sepolia sequencer may be down. ` +
+        `Transactions cannot be confirmed until block production resumes.`
+      );
+    }
+    console.log(`[Starknet] Network healthy — latest block ${(block as any).block_number}, age ${Math.round(ageMs / 1000)}s`);
+  } catch (err: any) {
+    if (err.message?.includes("Network appears halted")) throw err;
+    console.warn("[Starknet] Could not check network health:", err?.message);
+    // If we can't reach the RPC at all, let the operation try and fail naturally
+  }
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -431,12 +464,22 @@ export async function getNetworkInfo() {
   const enabled = STARKNET_CONFIG.isEnabled;
   let blockNumber = 0;
   let contractDeployed = false;
+  let networkHealthy = true;
+  let networkMessage = "";
 
   if (enabled) {
     try {
       const provider = getProvider();
-      const block = await provider.getBlockNumber();
-      blockNumber = block;
+      const block = await provider.getBlockWithTxHashes("latest");
+      blockNumber = (block as any).block_number || 0;
+      const blockTimestamp = (block as any).timestamp;
+      if (blockTimestamp) {
+        const ageMs = Date.now() - blockTimestamp * 1000;
+        if (ageMs > NETWORK_STALE_THRESHOLD_MS) {
+          networkHealthy = false;
+          networkMessage = `Network halted — latest block is ${Math.round(ageMs / 60_000)} min old. Starknet Sepolia sequencer may be down.`;
+        }
+      }
     } catch {
       // ignore
     }
@@ -451,6 +494,8 @@ export async function getNetworkInfo() {
     contractDeployed,
     operatorAddress: STARKNET_CONFIG.operatorAddress || null,
     blockNumber,
+    networkHealthy,
+    networkMessage,
     explorerUrl: STARKNET_CONFIG.explorerUrl,
   };
 }
