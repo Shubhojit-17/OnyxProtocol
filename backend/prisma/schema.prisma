@@ -8,9 +8,10 @@ datasource db {
 }
 
 model User {
-  id            String   @id @default(uuid())
-  walletAddress String   @unique
-  createdAt     DateTime @default(now())
+  id             String   @id @default(uuid())
+  walletAddress  String   @unique
+  createdAt      DateTime @default(now())
+  faucetClaimed  Boolean  @default(false)
 
   vaultBalances        VaultBalance[]
   orderCommitments     OrderCommitment[]
@@ -26,7 +27,7 @@ model UserSettings {
   privacyMode     Boolean @default(true)
   gasPreference   String  @default("Standard")
   relayer         Boolean @default(true)
-  defaultPair     String  @default("STRK / ETH")
+  defaultPair     String  @default("STRK / oSEP")
   notifProofVerified   Boolean @default(true)
   notifOrderMatched    Boolean @default(true)
   notifVaultActivity   Boolean @default(true)
@@ -38,7 +39,7 @@ model UserSettings {
 model VaultBalance {
   id              String @id @default(uuid())
   userId          String
-  assetSymbol     String // STRK, ETH
+  assetSymbol     String // STRK, oETH, oSEP
   publicBalance   Float  @default(0)
   shieldedBalance Float  @default(0)
   lockedBalance   Float  @default(0)
@@ -74,6 +75,11 @@ model OrderCommitment {
   amountEncrypted  String      @default("")
   priceEncrypted   String      @default("")
   status           OrderStatus @default(CREATED)
+  allowPartialFill Boolean     @default(true)
+  originalAmount   Float?      // Original amount before partial fill
+  parentOrderId    String?     // Link to parent order (for remainder orders)
+  onChainId        Int?        // On-chain commitment ID from Starknet contract
+  onChainTxHash    String?     // Tx hash of the submit_commitment call
   createdAt        DateTime    @default(now())
   expiresAt        DateTime?
 
@@ -84,6 +90,7 @@ model OrderCommitment {
 
 enum MatchStatus {
   PENDING
+  MATCHED
   PROVING
   VERIFIED
   SETTLED
@@ -97,6 +104,8 @@ model Match {
   pair         String      @default("")
   amount       String      @default("")
   status       MatchStatus @default(PENDING)
+  onChainMatchId  Int?       // On-chain match ID from Starknet contract
+  onChainTxHash   String?    // Tx hash of the record_match call
   createdAt    DateTime    @default(now())
 
   buyOrder     OrderCommitment  @relation("BuyOrder", fields: [buyOrderId], references: [id])

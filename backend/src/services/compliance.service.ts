@@ -166,7 +166,7 @@ export async function getComplianceSummary(walletAddress: string) {
     const match = o.buyMatch || o.sellMatch;
     return {
       id: match?.id ?? o.id,
-      pair: `${o.assetIn} / ${o.assetOut}`,
+      pair: o.orderType === "BUY" ? `${o.assetOut} / ${o.assetIn}` : `${o.assetIn} / ${o.assetOut}`,
       date: o.createdAt.toLocaleDateString("en-US", {
         year: "numeric",
         month: "short",

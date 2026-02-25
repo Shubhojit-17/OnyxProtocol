@@ -28,7 +28,7 @@ export const STARKNET_CONFIG = {
   operatorAddress: process.env.STARKNET_OPERATOR_ADDRESS || "",
 
   // Explorer base URL
-  explorerUrl: process.env.STARKNET_EXPLORER_URL || "https://sepolia.starkscan.co",
+  explorerUrl: process.env.STARKNET_EXPLORER_URL || "https://sepolia.voyager.online",
 
   // Whether on-chain integration is active
   // If false, the system still works with simulated settlement (for dev without devnet)
@@ -53,6 +53,8 @@ export const STARKNET_CONFIG = {
 export const TOKEN_ADDRESSES: Record<string, string> = {
   STRK: process.env.STRK_TOKEN_ADDRESS || "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
   ETH: process.env.ETH_TOKEN_ADDRESS || "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
+  oETH: process.env.oETH_TOKEN_ADDRESS || "0x016cb8266e5094847ee3d4a5a7af4581c7827b76f9337f909538e2dde0f34f4f",
+  oSEP: process.env.oSEP_TOKEN_ADDRESS || "0x02bec35828c51118ad5841fbf4670bf11485fcb2f212c5bfd0b96e3c22f72ff3",
 };
 
 // Symbol -> token contract address mapping
@@ -64,6 +66,8 @@ export function symbolToTokenAddress(symbol: string): string | undefined {
 export const ASSET_FELT_MAP: Record<string, string> = {
   STRK: "0x5354524b",
   ETH: "0x455448",
+  oETH: "0x6f455448",
+  oSEP: "0x6f534550",
 };
 
 export function assetToFelt(symbol: string): string {

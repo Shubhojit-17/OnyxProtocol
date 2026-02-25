@@ -1,8 +1,9 @@
 import prisma from "../db/prisma.js";
-import { getAllPrices } from "./price.service.js";
+import { getAllPrices, getAssetPrice, getExchangeRate } from "./price.service.js";
 
 /**
  * Returns dark pool statistics derived from real DB data and live prices.
+ * Supports multi-pair trading: STRK, oETH, oSEP.
  */
 export async function getDarkPoolStats() {
   const prices = await getAllPrices();
@@ -33,13 +34,21 @@ export async function getDarkPoolStats() {
   // Generate heatmap from real order density (or empty)
   const heatmapData = await generateHeatmapData();
 
-  // Volume: sum of all settled order amounts * STRK price
+  // Volume: sum of all settled order amounts * their USD price
   const settledOrders = await prisma.orderCommitment.findMany({
     where: { status: "SETTLED" },
-    select: { amount: true },
+    select: { amount: true, assetIn: true, assetOut: true, orderType: true },
   });
-  const totalVolumeStrk = settledOrders.reduce((s: number, o: any) => s + (o.amount?.toNumber?.() || Number(o.amount) || 0), 0);
-  const totalVolumeUsd = totalVolumeStrk * strkPrice;
+  let totalVolumeUsd = 0;
+  for (const o of settledOrders) {
+    const amt = Number(o.amount) || 0;
+    const baseAsset = o.orderType === "BUY" ? o.assetOut : o.assetIn;
+    const baseSymbol = baseAsset === "oETH" ? "oETH" : baseAsset === "oSEP" ? "oSEP" : "STRK";
+    const assetPrice = baseSymbol === "oETH" ? (prices.oETH || prices.eth || 2500)
+      : baseSymbol === "oSEP" ? (prices.oSEP || 1)
+      : strkPrice;
+    totalVolumeUsd += amt * assetPrice;
+  }
   const volume24h = totalVolumeUsd >= 1_000_000
     ? `$${(totalVolumeUsd / 1_000_000).toFixed(1)}M`
     : totalVolumeUsd >= 1_000
@@ -62,17 +71,41 @@ export async function getDarkPoolStats() {
 
   const pairMap = new Map<string, { buys: number; sells: number }>();
   for (const o of orderPool) {
-    const pair = `${o.assetIn} / ${o.assetOut}`;
+    // Use canonical pair: buyer wants assetOut, seller provides assetIn
+    const assets = [o.assetIn, o.assetOut].sort();
+    const pair = `${assets[0]} / ${assets[1]}`;
     const entry = pairMap.get(pair) || { buys: 0, sells: 0 };
     if (o.orderType === "BUY") entry.buys++;
     else entry.sells++;
     pairMap.set(pair, entry);
   }
 
+  // Compute exchange rates for all supported pairs
+  const exchangeRates: Record<string, number> = {};
+  const pairs = [
+    ["STRK", "oETH"], ["STRK", "oSEP"],
+    ["oETH", "oSEP"], ["oETH", "STRK"],
+    ["oSEP", "STRK"], ["oSEP", "oETH"],
+  ];
+  for (const [base, quote] of pairs) {
+    exchangeRates[`${base}/${quote}`] = await getExchangeRate(base, quote);
+  }
+
+  // Default display pair: STRK/oSEP
+  const defaultRate = exchangeRates["STRK/oSEP"] || 0;
+
   return {
     hiddenOrderCount: openOrders,
-    midPrice: strkPrice > 0 ? `$${strkPrice.toLocaleString("en-US", { minimumFractionDigits: 4 })}` : "—",
-    midPriceRaw: strkPrice,
+    midPrice: defaultRate > 0 ? `$${defaultRate.toFixed(6)}` : "—",
+    midPriceRaw: defaultRate,
+    // USD prices for all tokens
+    prices: {
+      STRK: prices.strk,
+      oETH: prices.oETH,
+      oSEP: prices.oSEP,
+      ETH: prices.eth,
+    },
+    exchangeRates,
     oracle: "CoinGecko",
     proofVelocity: avgProofSpeed > 0 ? `${avgProofSpeed.toFixed(2)}s` : "—",
     volume24h,
@@ -88,7 +121,7 @@ export async function getDarkPoolStats() {
       time: getRelativeTime(e.createdAt),
       type: getEventDisplayType(e.type),
     })),
-    priceLevels: strkPrice > 0 ? generatePriceLevels(strkPrice) : [],
+    priceLevels: defaultRate > 0 ? generatePriceLevels(defaultRate) : [],
   };
 }
 
@@ -138,12 +171,14 @@ async function generateHeatmapData(): Promise<number[][]> {
 }
 
 function generatePriceLevels(midPrice: number) {
+  // midPrice is the STRK/ETH ratio (e.g. 0.000016)
+  const decimals = midPrice < 0.001 ? 8 : midPrice < 1 ? 6 : 4;
   return [
-    `$${(midPrice * 1.2).toFixed(4)}`,
-    `$${(midPrice * 1.1).toFixed(4)}`,
-    `$${midPrice.toFixed(4)}`,
-    `$${(midPrice * 0.9).toFixed(4)}`,
-    `$${(midPrice * 0.8).toFixed(4)}`,
+    (midPrice * 1.2).toFixed(decimals),
+    (midPrice * 1.1).toFixed(decimals),
+    midPrice.toFixed(decimals),
+    (midPrice * 0.9).toFixed(decimals),
+    (midPrice * 0.8).toFixed(decimals),
   ];
 }
 

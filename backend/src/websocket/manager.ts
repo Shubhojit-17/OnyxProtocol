@@ -4,7 +4,9 @@ import type { Server } from "http";
 export type WSEventType =
   | "order:created"
   | "order:matched"
+  | "order:cancelled"
   | "proof:generating"
+  | "proof:generated"
   | "proof:verified"
   | "settlement:confirmed"
   | "activity:new"

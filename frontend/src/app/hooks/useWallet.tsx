@@ -156,11 +156,72 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     disconnectingRef.current = false;
   }, []);
 
-  /* ── on mount: clear any stale stored wallet ── */
+  /* ── on mount: try to silently reconnect to last wallet ── */
   useEffect(() => {
-    localStorage.removeItem("onyx_wallet");
-    setVerified(true);
-  }, []);
+    const savedAddress = localStorage.getItem("onyx_wallet");
+    if (!savedAddress) {
+      setVerified(true);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        // Try silent reconnect (no modal) — works if the wallet extension
+        // is still authorised from a previous session.
+        const selectedWallet = await connect({ modalMode: "neverAsk" });
+
+        if (cancelled) return;
+
+        if (!selectedWallet) {
+          // Wallet extension not available — clear stale state
+          localStorage.removeItem("onyx_wallet");
+          localStorage.removeItem("onyx_wallet_type");
+          setVerified(true);
+          return;
+        }
+
+        // Switch to Sepolia
+        try {
+          await selectedWallet.request({
+            type: "wallet_switchStarknetChain",
+            params: { chainId: SN_SEPOLIA },
+          });
+        } catch {
+          // May already be on Sepolia
+        }
+
+        const provider = new RpcProvider({ nodeUrl: SEPOLIA_RPC });
+        const walletAccount = await WalletAccount.connect(provider, selectedWallet);
+        const address = walletAccount.address;
+
+        if (cancelled) return;
+
+        if (!address) {
+          localStorage.removeItem("onyx_wallet");
+          localStorage.removeItem("onyx_wallet_type");
+          setVerified(true);
+          return;
+        }
+
+        console.log("[Wallet] Auto-reconnected:", selectedWallet.name, address);
+
+        setAccount(walletAccount);
+        setStarknetWallet(selectedWallet);
+        setWalletName(selectedWallet.name || "Starknet Wallet");
+        await connectWithAddress(address);
+      } catch (err) {
+        console.warn("[Wallet] Auto-reconnect failed, clearing saved state:", err);
+        localStorage.removeItem("onyx_wallet");
+        localStorage.removeItem("onyx_wallet_type");
+      } finally {
+        if (!cancelled) setVerified(true);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [connectWithAddress]);
 
   return (
     <WalletContext.Provider

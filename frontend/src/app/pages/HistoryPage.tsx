@@ -134,7 +134,7 @@ export default function HistoryPage() {
         <div className="relative">
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
             className="bg-white/[0.03] border border-white/[0.06] rounded-xl px-3 py-2 text-xs text-white appearance-none pr-8 focus:outline-none focus:border-cobalt/40"
           >
             <option value="All">All Status</option>
@@ -149,12 +149,13 @@ export default function HistoryPage() {
         <div className="relative">
           <select
             value={assetFilter}
-            onChange={(e) => setAssetFilter(e.target.value)}
+            onChange={(e) => { setAssetFilter(e.target.value); setPage(1); }}
             className="bg-white/[0.03] border border-white/[0.06] rounded-xl px-3 py-2 text-xs text-white appearance-none pr-8 focus:outline-none focus:border-cobalt/40"
           >
             <option value="All">All Assets</option>
             <option value="STRK">STRK</option>
-            <option value="ETH">ETH</option>
+            <option value="oETH">oETH</option>
+            <option value="oSEP">oSEP</option>
           </select>
           <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#475569] pointer-events-none" />
         </div>
@@ -164,9 +165,9 @@ export default function HistoryPage() {
           <span className="text-xs text-[#94a3b8]">{
             trades.length > 0
               ? (() => {
-                  const dates = trades.map((t: any) => new Date(t.date || t.createdAt));
-                  const min = new Date(Math.min(...dates.map((d: Date) => d.getTime())));
-                  const max = new Date(Math.max(...dates.map((d: Date) => d.getTime())));
+                  const timestamps = trades.map((t: any) => new Date(t.date || t.createdAt).getTime());
+                  const min = new Date(timestamps.reduce((a: number, b: number) => Math.min(a, b), Infinity));
+                  const max = new Date(timestamps.reduce((a: number, b: number) => Math.max(a, b), -Infinity));
                   const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
                   return `${fmt(min)} - ${fmt(max)}`;
                 })()

@@ -14,6 +14,7 @@ export async function createOrder(params: {
   price: number;
   commitmentHash?: string;
   expiresAt?: string;
+  allowPartialFill?: boolean;
 }) {
   const user = await prisma.user.findUnique({
     where: { walletAddress: params.walletAddress },
@@ -22,26 +23,25 @@ export async function createOrder(params: {
 
   const hash = params.commitmentHash || generateCommitmentHash();
 
-  // For BUY orders: lock quote asset (e.g. ETH) equivalent from shielded balance
-  // For SELL orders: lock base asset (e.g. STRK) from shielded balance
-  const lockAsset = params.orderType === "BUY" ? params.assetOut : params.assetIn;
+  // BUY: user spends assetIn (ETH) to get assetOut (STRK) → lock ETH = amount × price
+  // SELL: user spends assetIn (STRK) to get assetOut (ETH) → lock STRK = amount
+  const lockAsset = params.assetIn; // always lock what you're spending
   const lockAmount = params.orderType === "BUY" ? params.amount * params.price : params.amount;
 
   // Check shielded balance — enforce sufficient funds
-  const balanceAsset = params.orderType === "BUY" ? params.assetOut : params.assetIn;
   const balance = await prisma.vaultBalance.findUnique({
-    where: { userId_assetSymbol: { userId: user.id, assetSymbol: balanceAsset } },
+    where: { userId_assetSymbol: { userId: user.id, assetSymbol: lockAsset } },
   });
 
   const available = balance ? Number(balance.shieldedBalance) : 0;
   if (available < lockAmount) {
     throw new Error(
-      `Insufficient shielded balance: you have ${available.toFixed(6)} ${balanceAsset} but need ${lockAmount.toFixed(6)} ${balanceAsset}. Deposit and shield funds in the Vault first.`
+      `Insufficient shielded balance: you have ${available.toFixed(6)} ${lockAsset} but need ${lockAmount.toFixed(6)} ${lockAsset}. Deposit and shield funds in the Vault first.`
     );
   }
 
   await prisma.vaultBalance.update({
-    where: { userId_assetSymbol: { userId: user.id, assetSymbol: balanceAsset } },
+    where: { userId_assetSymbol: { userId: user.id, assetSymbol: lockAsset } },
     data: {
       shieldedBalance: { decrement: lockAmount },
       lockedBalance: { increment: lockAmount },
@@ -60,18 +60,24 @@ export async function createOrder(params: {
       amountEncrypted: "████████",
       priceEncrypted: "████████",
       status: "CREATED",
+      allowPartialFill: params.allowPartialFill ?? true,
       expiresAt: params.expiresAt ? new Date(params.expiresAt) : null,
     },
   });
 
+  // Show canonical pair: for BUY, assetOut is base; for SELL, assetIn is base
+  const displayPair = params.orderType === 'BUY'
+    ? `${params.assetOut}/${params.assetIn}`
+    : `${params.assetIn}/${params.assetOut}`;
+
   await prisma.activityEvent.create({
     data: {
       type: "ORDER_CREATED",
-      message: `New order committed: ${params.orderType} ${params.assetIn}/${params.assetOut}`,
+      message: `New order committed: ${params.orderType} ${displayPair}`,
       metadata: JSON.stringify({
         orderId: order.id,
         walletAddress: params.walletAddress,
-        pair: `${params.assetIn}/${params.assetOut}`,
+        pair: displayPair,
       }),
     },
   });
@@ -80,14 +86,14 @@ export async function createOrder(params: {
     orderId: order.id,
     shortId: shortOrderId(order.id),
     orderType: params.orderType,
-    pair: `${params.assetIn} / ${params.assetOut}`,
+    pair: displayPair,
     commitmentHash: hash,
     status: "CREATED",
   });
 
   wsManager.emit("activity:new", {
     type: "ORDER_CREATED",
-    message: `New order committed: ${params.orderType} ${params.assetIn}/${params.assetOut}`,
+    message: `New order committed: ${params.orderType} ${displayPair}`,
   });
 
   return {
@@ -114,8 +120,14 @@ export async function listOrders(walletAddress: string) {
   return orders.map((o: any) => ({
     id: o.id,
     shortId: shortOrderId(o.id),
-    pair: `${o.assetIn} / ${o.assetOut}`,
+    pair: o.orderType === 'BUY' ? `${o.assetOut} / ${o.assetIn}` : `${o.assetIn} / ${o.assetOut}`,
     orderType: o.orderType,
+    amount: o.amount,
+    originalAmount: o.originalAmount,
+    isPartialFill: o.originalAmount != null && o.originalAmount !== o.amount,
+    parentOrderId: o.parentOrderId,
+    allowPartialFill: o.allowPartialFill,
+    price: o.price,
     status: o.status,
     commitmentHash: o.commitmentHash,
     createdAt: o.createdAt.toISOString(),
@@ -135,14 +147,15 @@ export async function getOrderPool() {
     },
   });
 
-  // Aggregate by pair
+  // Aggregate by canonical pair (sorted alphabetically)
   const pairMap = new Map<string, { buys: number; sells: number }>();
   for (const order of openOrders) {
-    const pair = `${order.assetIn}/${order.assetOut}`;
-    const entry = pairMap.get(pair) || { buys: 0, sells: 0 };
+    const assets = [order.assetIn, order.assetOut].sort();
+    const canonicalPair = `${assets[0]}/${assets[1]}`;
+    const entry = pairMap.get(canonicalPair) || { buys: 0, sells: 0 };
     if (order.orderType === "BUY") entry.buys++;
     else entry.sells++;
-    pairMap.set(pair, entry);
+    pairMap.set(canonicalPair, entry);
   }
 
   return {
@@ -153,5 +166,85 @@ export async function getOrderPool() {
       sells: counts.sells,
       total: counts.buys + counts.sells,
     })),
+  };
+}
+
+/**
+ * Cancel/delete an order. Only orders in CREATED status can be cancelled.
+ * Matched/settled orders cannot be cancelled.
+ * Releases the locked balance back to the user's shielded balance.
+ */
+export async function cancelOrder(params: { walletAddress: string; orderId: string }) {
+  const user = await prisma.user.findUnique({
+    where: { walletAddress: params.walletAddress },
+  });
+  if (!user) throw new Error("User not found");
+
+  const order = await prisma.orderCommitment.findUnique({
+    where: { id: params.orderId },
+  });
+  if (!order) throw new Error("Order not found");
+  if (order.userId !== user.id) throw new Error("Not your order");
+  if (order.status !== "CREATED") {
+    throw new Error(`Cannot cancel order in status: ${order.status}. Only open orders can be cancelled.`);
+  }
+
+  // Calculate the locked amount to release
+  // BUY: locked amount = amount * price (quote asset / assetIn)
+  // SELL: locked amount = amount (base asset / assetIn)
+  const lockAsset = order.assetIn;
+  const lockAmount = order.orderType === "BUY" ? order.amount * order.price : order.amount;
+
+  // Release locked balance back to shielded
+  await prisma.vaultBalance.update({
+    where: { userId_assetSymbol: { userId: user.id, assetSymbol: lockAsset } },
+    data: {
+      lockedBalance: { decrement: lockAmount },
+      shieldedBalance: { increment: lockAmount },
+    },
+  });
+
+  // Mark order as cancelled
+  await prisma.orderCommitment.update({
+    where: { id: order.id },
+    data: { status: "CANCELLED" },
+  });
+
+  // Show canonical pair
+  const displayPair = order.orderType === "BUY"
+    ? `${order.assetOut}/${order.assetIn}`
+    : `${order.assetIn}/${order.assetOut}`;
+
+  await prisma.activityEvent.create({
+    data: {
+      type: "ORDER_CREATED", // reuse type
+      message: `Order cancelled: ${order.orderType} ${displayPair}`,
+      metadata: JSON.stringify({
+        orderId: order.id,
+        walletAddress: params.walletAddress,
+        pair: displayPair,
+        action: "CANCELLED",
+      }),
+    },
+  });
+
+  wsManager.emit("order:cancelled", {
+    orderId: order.id,
+    shortId: shortOrderId(order.id),
+    pair: displayPair,
+    status: "CANCELLED",
+  });
+
+  wsManager.emit("activity:new", {
+    type: "ORDER_CANCELLED",
+    message: `Order cancelled: ${order.orderType} ${displayPair}`,
+  });
+
+  return {
+    orderId: order.id,
+    shortId: shortOrderId(order.id),
+    status: "CANCELLED",
+    releasedAmount: lockAmount,
+    releasedAsset: lockAsset,
   };
 }

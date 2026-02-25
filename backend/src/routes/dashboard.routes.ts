@@ -7,7 +7,8 @@ const router = Router();
 router.get("/overview", async (req: Request, res: Response) => {
   try {
     const walletAddress = req.query.walletAddress as string | undefined;
-    const data = await getDashboardOverview(walletAddress);
+    const period = (req.query.period as string) || "24h";
+    const data = await getDashboardOverview(walletAddress, period);
     res.json(data);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

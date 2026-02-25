@@ -34,7 +34,7 @@ export async function getTradeHistory(walletAddress: string) {
       id: shortOrderId(o.id),
       orderId: o.id,
       matchId: match?.id ?? null,
-      pair: `${o.assetIn} / ${o.assetOut}`,
+      pair: o.orderType === "BUY" ? `${o.assetOut} / ${o.assetIn}` : `${o.assetIn} / ${o.assetOut}`,
       orderType: o.orderType,
       status: statusMap[o.status] || o.status,
       rawStatus: o.status,

@@ -20,6 +20,9 @@
 /// is the natural next step).
 /// ─────────────────────────────────────────────────────────────────
 
+/// MockERC20 module — mintable test tokens (oETH, oSEP)
+pub mod mock_erc20;
+
 use starknet::ContractAddress;
 
 /// ──────────── ERC20 Interface (for external dispatching) ────────────

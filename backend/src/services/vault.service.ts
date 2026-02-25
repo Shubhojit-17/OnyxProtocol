@@ -1,6 +1,6 @@
 import prisma from "../db/prisma.js";
 import { wsManager } from "../websocket/manager.js";
-import { getAssetPrice as getLivePrice } from "./price.service.js";
+import { getAssetPrice as getLivePrice, getAllPrices } from "./price.service.js";
 
 export async function getVaultBalances(walletAddress: string) {
   const user = await prisma.user.findUnique({ where: { walletAddress } });
@@ -10,10 +10,18 @@ export async function getVaultBalances(walletAddress: string) {
     where: { userId: user.id },
   });
 
-  // Fetch live prices for each asset
+  // Fetch all prices once instead of N+1 queries
+  const prices = await getAllPrices();
+  function assetPrice(symbol: string): number {
+    if (symbol === "STRK") return prices.strk || 0.31;
+    if (symbol === "ETH" || symbol === "oETH") return prices.oETH || prices.eth || 2500;
+    if (symbol === "oSEP") return prices.oSEP || 1;
+    return 1;
+  }
+
   const result = [];
   for (const b of balances) {
-    const usdPrice = await getLivePrice(b.assetSymbol);
+    const usdPrice = assetPrice(b.assetSymbol);
     result.push({
       ...b,
       usdPrice,

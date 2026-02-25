@@ -11,11 +11,11 @@ export const STARKNET_CONFIG = {
     name: "Starknet Sepolia",
     chainId: "SN_SEPOLIA",
     rpcUrl: "https://api.cartridge.gg/x/starknet/sepolia",
-    explorerUrl: "https://sepolia.starkscan.co",
+    explorerUrl: "https://sepolia.voyager.online",
     explorerTxUrl: (txHash: string) =>
-      `https://sepolia.starkscan.co/tx/${txHash}`,
+      `https://sepolia.voyager.online/tx/${txHash}`,
     explorerContractUrl: (address: string) =>
-      `https://sepolia.starkscan.co/contract/${address}`,
+      `https://sepolia.voyager.online/contract/${address}`,
   },
 
   // Local Starknet Devnet (for offline development)
@@ -44,8 +44,23 @@ export const CONTRACT_ADDRESS =
 // ─── ERC20 Token Addresses (Starknet Sepolia) ──────────
 export const TOKEN_ADDRESSES: Record<string, string> = {
   STRK: "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
-  ETH: "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
+  oETH: "0x016cb8266e5094847ee3d4a5a7af4581c7827b76f9337f909538e2dde0f34f4f",
+  oSEP: "0x02bec35828c51118ad5841fbf4670bf11485fcb2f212c5bfd0b96e3c22f72ff3",
 };
+
+// All supported tokens with display metadata
+export const SUPPORTED_TOKENS = [
+  { symbol: "STRK", name: "Starknet Token", decimals: 18, color: "#7B3FE4" },
+  { symbol: "oETH", name: "Onyx Ethereum", decimals: 18, color: "#627EEA" },
+  { symbol: "oSEP", name: "Onyx Sepolia", decimals: 18, color: "#4ade80" },
+] as const;
+
+// Available trading pairs (base / quote)
+export const TRADING_PAIRS = [
+  { base: "STRK", quote: "oETH", label: "STRK / oETH" },
+  { base: "STRK", quote: "oSEP", label: "STRK / oSEP" },
+  { base: "oETH", quote: "oSEP", label: "oETH / oSEP" },
+] as const;
 
 // ─── Supported Starknet Wallets ─────────────────────────
 export const SUPPORTED_WALLETS = [
@@ -69,6 +84,8 @@ export const SUPPORTED_WALLETS = [
 export const ASSET_FELT_MAP: Record<string, string> = {
   "STRK": "0x5354524b",          // "STRK"
   "ETH": "0x455448",             // "ETH"
+  "oETH": "0x6f455448",          // "oETH"
+  "oSEP": "0x6f534550",          // "oSEP"
 };
 
 export function assetToFelt(symbol: string): string {

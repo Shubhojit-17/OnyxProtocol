@@ -41,6 +41,13 @@ export async function getExecutionTimeline(walletAddress: string) {
       CANCELLED: "Failed",
     };
 
+    // Partial fill info
+    const isPartialFill = o.originalAmount != null && o.originalAmount !== o.amount;
+    const baseAsset = o.orderType === 'BUY' ? o.assetOut : o.assetIn;
+    const amountLabel = isPartialFill
+      ? `${o.amount} / ${o.originalAmount} ${baseAsset} (partial)`
+      : `${o.amount} ${baseAsset}`;
+
     return {
       id: shortOrderId(o.id),
       orderId: o.id,
@@ -50,23 +57,37 @@ export async function getExecutionTimeline(walletAddress: string) {
         : null,
       fullProofId: proof?.proofId || null,
       status: statusMap[o.status] || o.status,
-      pair: `${o.assetIn} / ${o.assetOut}`,
-      amount: `${o.amount} ${o.assetIn}`,
+      pair: o.orderType === 'BUY' ? `${o.assetOut} / ${o.assetIn}` : `${o.assetIn} / ${o.assetOut}`,
+      orderType: o.orderType,
+      amount: amountLabel,
+      isPartialFill,
+      originalAmount: o.originalAmount,
+      filledAmount: isPartialFill ? o.amount : null,
+      parentOrderId: o.parentOrderId,
+      onChainId: o.onChainId,
+      onChainTxHash: o.onChainTxHash,
+      matchOnChainId: match?.onChainMatchId,
+      matchOnChainTxHash: match?.onChainTxHash,
       steps,
       certificate: proof?.proofStatus === "VERIFIED"
         ? {
             proofId: proof.proofId,
             result: "VALID",
             txHash: settlement?.txHash
-              ? `${settlement.txHash.slice(0, 10)}...${settlement.txHash.slice(-8)}`
+              ? (settlement.network && settlement.network.includes("simulated")
+                ? null
+                : `${settlement.txHash.slice(0, 10)}...${settlement.txHash.slice(-8)}`)
               : null,
-            fullTxHash: settlement?.txHash ?? null,
+            fullTxHash: settlement?.txHash
+              ? (settlement.network && settlement.network.includes("simulated") ? null : settlement.txHash)
+              : null,
             gasUsed: settlement?.gasUsed ?? null,
             timeToVerify: proof.verificationTimeMs
               ? `${(proof.verificationTimeMs / 1000).toFixed(1)}s`
               : null,
             proofSize: proof.proofSize,
             verifier: proof.verifier,
+            isSimulated: settlement?.network ? settlement.network.includes("simulated") : false,
           }
         : null,
     };
@@ -84,30 +105,42 @@ function buildSteps(
     status: string;
     time: string;
     detail: string;
+    txHash?: string;
   }[] = [];
 
   // Step 1: Order Commitment
+  const baseAsset = order.orderType === 'BUY' ? order.assetOut : order.assetIn;
+  const isPartialFill = order.originalAmount != null && order.originalAmount !== order.amount;
+  const commitmentDetail = isPartialFill
+    ? `${order.orderType} ${order.amount}/${order.originalAmount} ${baseAsset} (partial) — Hash: ${order.commitmentHash.slice(0, 12)}...`
+    : `${order.orderType} ${order.amount} ${baseAsset} — Hash: ${order.commitmentHash.slice(0, 12)}...`;
+
   steps.push({
     name: "Order Commitment",
     status: "done",
     time: formatTime(order.createdAt),
-    detail: `${order.orderType} ${order.amount} ${order.assetIn} — Hash: ${order.commitmentHash.slice(0, 12)}...`,
+    detail: commitmentDetail,
+    txHash: order.onChainTxHash || undefined,
   });
 
-  // Step 2: Match Found
+  // Step 2: Dark Pool Matching
   if (match) {
+    const matchDetail = isPartialFill
+      ? `Partial fill: ${order.amount} of ${order.originalAmount} ${baseAsset} matched in ${order.orderType === 'BUY' ? `${order.assetOut}/${order.assetIn}` : `${order.assetIn}/${order.assetOut}`} dark pool`
+      : `Counterparty matched in ${order.orderType === 'BUY' ? `${order.assetOut}/${order.assetIn}` : `${order.assetIn}/${order.assetOut}`} dark pool`;
     steps.push({
       name: "Match Found",
       status: "done",
       time: formatTime(match.createdAt),
-      detail: `Pair matched in ${order.assetIn}/${order.assetOut} dark pool`,
+      detail: matchDetail,
+      txHash: match.onChainTxHash || undefined,
     });
   } else {
     steps.push({
-      name: "Match Found",
+      name: "Searching Pool",
       status: "active",
       time: "",
-      detail: "Searching for counterparty in the dark pool...",
+      detail: "Scanning dark pool for a matching counterparty...",
     });
     return steps;
   }
@@ -117,9 +150,9 @@ function buildSteps(
     if (proof.proofStatus === "PENDING") {
       steps.push({
         name: "ZK Proof Generation",
-        status: "pending",
+        status: "active",
         time: "",
-        detail: "Waiting for prover",
+        detail: "Generating ZK-STARK proof...",
       });
     } else if (proof.proofStatus === "GENERATED" || proof.proofStatus === "VERIFIED") {
       steps.push({
@@ -168,11 +201,17 @@ function buildSteps(
 
   // Step 5: Settlement
   if (settlement) {
+    const isSimulated = settlement.network && settlement.network.includes("simulated");
+    const isLegacy = settlement.network && settlement.network.includes("legacy");
+    const txLabel = isSimulated
+      ? `Tx: ${settlement.txHash.slice(0, 10)}...${settlement.txHash.slice(-8)} (simulated)`
+      : `Tx: ${settlement.txHash.slice(0, 10)}...${settlement.txHash.slice(-8)}`;
     steps.push({
       name: "Settlement",
       status: "done",
       time: formatTime(settlement.settledAt),
-      detail: `Tx: ${settlement.txHash.slice(0, 10)}...`,
+      detail: txLabel,
+      txHash: isSimulated ? undefined : settlement.txHash,
     });
   } else if (proof?.proofStatus === "VERIFIED") {
     steps.push({

@@ -11,7 +11,7 @@
  */
 
 import { RpcProvider, Account, Contract, shortString, num } from "starknet";
-import { STARKNET_CONFIG, assetToFelt } from "./starknet.config.js";
+import { STARKNET_CONFIG, TOKEN_ADDRESSES, assetToFelt } from "./starknet.config.js";
 import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -21,11 +21,25 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ─── ABI ────────────────────────────────────────────────
 let contractAbi: any[];
 try {
-  const abiPath = resolve(__dirname, "../../../contracts/abi/onyx_darkpool.json");
-  contractAbi = JSON.parse(readFileSync(abiPath, "utf-8"));
-} catch {
-  console.warn("[Starknet] Could not load contract ABI — on-chain operations will be simulated");
-  contractAbi = [];
+  const abiPath = resolve(__dirname, "..", "..", "..", "contracts", "abi", "onyx_darkpool.json");
+  const raw = readFileSync(abiPath, "utf-8");
+  const parsed = JSON.parse(raw);
+  // ABI may be nested inside a wrapper object
+  contractAbi = Array.isArray(parsed) ? parsed : (parsed.abi || []);
+  console.log(`[Starknet] Contract ABI loaded (${contractAbi.length} entries)`);
+} catch (err: any) {
+  console.warn("[Starknet] ABI load error:", err?.message || err);
+  // Try alternative path (relative to cwd parent)
+  try {
+    const altPath = resolve(process.cwd(), "..", "contracts", "abi", "onyx_darkpool.json");
+    const raw = readFileSync(altPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    contractAbi = Array.isArray(parsed) ? parsed : (parsed.abi || []);
+    console.log(`[Starknet] Contract ABI loaded from alt path (${contractAbi.length} entries)`);
+  } catch {
+    console.warn("[Starknet] Could not load contract ABI — on-chain operations will be simulated");
+    contractAbi = [];
+  }
 }
 
 // ─── Provider ───────────────────────────────────────────
@@ -85,14 +99,109 @@ export function getTxUrl(txHash: string): string {
 }
 
 /**
+ * Convert a hex string or arbitrary string to a valid felt252 value.
+ * felt252 max is ~2^252, so we truncate to 62 hex digits (248 bits) to be safe.
+ */
+function toFelt252(value: string): string {
+  if (!value || value === "0" || value === "0x0") return "0x0";
+  // If it's already a hex string
+  if (value.startsWith("0x")) {
+    const hex = value.slice(2);
+    // Truncate to 62 hex characters (248 bits) — safely within felt252 range
+    return "0x" + hex.slice(0, 62);
+  }
+  // Convert string to hex
+  const hex = Buffer.from(value).toString("hex");
+  return "0x" + hex.slice(0, 62);
+}
+
+/**
+ * Submit an order commitment on-chain (operator call).
+ * Returns { txHash, onChainId } or null if simulated.
+ */
+export async function submitCommitmentOnChain(
+  commitmentHash: string,
+  assetIn: string,
+  assetOut: string,
+  encryptedAmount: string,
+  encryptedPrice: string
+): Promise<{ txHash: string; onChainId: number } | null> {
+  const contract = getWriteContract();
+  if (!contract) {
+    console.log(
+      `[Starknet] SIMULATED submit_commitment(hash=${commitmentHash.slice(0, 16)}..., ${assetIn}→${assetOut})`
+    );
+    return null;
+  }
+
+  try {
+    // Convert asset symbols to felt252
+    const assetInFelt = assetToFelt(assetIn);
+    const assetOutFelt = assetToFelt(assetOut);
+    // Truncate commitment hash to fit felt252 (max ~252 bits = 63 hex digits)
+    // Take first 62 hex digits (248 bits) to guarantee it's within range
+    const hashFelt = toFelt252(commitmentHash);
+    // Convert encrypted amount/price to felt252
+    const amountFelt = toFelt252(encryptedAmount);
+    const priceFelt = toFelt252(encryptedPrice);
+
+    console.log(`[Starknet] submit_commitment: hash=${hashFelt.slice(0, 16)}..., ${assetIn}→${assetOut}`);
+    const result = await contract.invoke("submit_commitment", [
+      hashFelt,
+      assetInFelt,
+      assetOutFelt,
+      amountFelt,
+      priceFelt,
+    ]);
+
+    const receipt = await getProvider().waitForTransaction(result.transaction_hash);
+    
+    // Extract commitment_id from the event
+    let onChainId = 0;
+    try {
+      // The CommitmentSubmitted event has commitment_id as the first key
+      const events = (receipt as any).events || [];
+      for (const event of events) {
+        if (event.keys && event.keys.length > 1) {
+          // commitment_id is typically in keys[1] (keys[0] is event selector)
+          onChainId = Number(BigInt(event.keys[1]));
+          if (onChainId > 0) break;
+        }
+      }
+      if (onChainId === 0) {
+        // Fallback: read commitment_count from contract
+        const readContract = getReadContract();
+        if (readContract) {
+          const count = await readContract.get_commitment_count();
+          onChainId = Number(count);
+        }
+      }
+    } catch (parseErr) {
+      console.warn("[Starknet] Could not parse commitment ID from receipt, reading from contract");
+      const readContract = getReadContract();
+      if (readContract) {
+        const count = await readContract.get_commitment_count();
+        onChainId = Number(count);
+      }
+    }
+
+    console.log(`[Starknet] Commitment submitted on-chain: id=${onChainId}, tx=${result.transaction_hash}`);
+    return { txHash: result.transaction_hash, onChainId };
+  } catch (err) {
+    console.error("[Starknet] Failed to submit commitment on-chain:", err);
+    return null;
+  }
+}
+
+/**
  * Record a match on-chain (operator call).
- * Returns the transaction hash or null if simulated.
+ * Returns { txHash, onChainMatchId } or null if simulated.
  */
 export async function recordMatchOnChain(
   buyCommitmentOnChainId: number,
   sellCommitmentOnChainId: number,
   matchedAmount: string
-): Promise<string | null> {
+): Promise<{ txHash: string; onChainMatchId: number } | null> {
   const contract = getWriteContract();
   if (!contract) {
     console.log(
@@ -105,11 +214,38 @@ export async function recordMatchOnChain(
     const result = await contract.invoke("record_match", [
       buyCommitmentOnChainId,
       sellCommitmentOnChainId,
-      matchedAmount,
+      toFelt252(matchedAmount),
     ]);
-    await getProvider().waitForTransaction(result.transaction_hash);
-    console.log(`[Starknet] Match recorded on-chain: ${result.transaction_hash}`);
-    return result.transaction_hash;
+    const receipt = await getProvider().waitForTransaction(result.transaction_hash);
+    
+    // Extract match_id from the MatchRecorded event
+    let onChainMatchId = 0;
+    try {
+      const events = (receipt as any).events || [];
+      for (const event of events) {
+        if (event.keys && event.keys.length > 1) {
+          onChainMatchId = Number(BigInt(event.keys[1]));
+          if (onChainMatchId > 0) break;
+        }
+      }
+      if (onChainMatchId === 0) {
+        const readContract = getReadContract();
+        if (readContract) {
+          const count = await readContract.get_match_count();
+          onChainMatchId = Number(count);
+        }
+      }
+    } catch (parseErr) {
+      console.warn("[Starknet] Could not parse match ID from receipt, reading from contract");
+      const readContract = getReadContract();
+      if (readContract) {
+        const count = await readContract.get_match_count();
+        onChainMatchId = Number(count);
+      }
+    }
+
+    console.log(`[Starknet] Match recorded on-chain: matchId=${onChainMatchId}, tx=${result.transaction_hash}`);
+    return { txHash: result.transaction_hash, onChainMatchId };
   } catch (err) {
     console.error("[Starknet] Failed to record match on-chain:", err);
     return null;
@@ -118,7 +254,7 @@ export async function recordMatchOnChain(
 
 /**
  * Settle a match on-chain (operator call).
- * Returns the transaction hash or null if simulated.
+ * Returns the transaction hash or null if simulated/failed.
  */
 export async function settleMatchOnChain(
   onChainMatchId: number,
@@ -133,11 +269,14 @@ export async function settleMatchOnChain(
   }
 
   try {
+    // Convert proofHash to felt252
+    const proofFelt = toFelt252(proofHash);
+    
     const result = await contract.invoke("settle_match", [
       onChainMatchId,
-      proofHash,
+      proofFelt,
     ]);
-    await getProvider().waitForTransaction(result.transaction_hash);
+    const receipt = await getProvider().waitForTransaction(result.transaction_hash);
     console.log(`[Starknet] Match settled on-chain: ${result.transaction_hash}`);
     return result.transaction_hash;
   } catch (err) {
@@ -187,6 +326,65 @@ export async function verifyContractDeployed(): Promise<boolean> {
     return !!classHash;
   } catch {
     return false;
+  }
+}
+
+// ─── Mock ERC20 ABI (for faucet minting) ─────────────────
+let mockErc20Abi: any[] = [];
+try {
+  const mockAbiPath = resolve(__dirname, "..", "..", "..", "contracts", "abi", "mock_erc20.json");
+  const rawMock = readFileSync(mockAbiPath, "utf-8");
+  const parsedMock = JSON.parse(rawMock);
+  mockErc20Abi = Array.isArray(parsedMock) ? parsedMock : (parsedMock.abi || []);
+  console.log(`[Starknet] MockERC20 ABI loaded (${mockErc20Abi.length} entries)`);
+} catch {
+  try {
+    const altMockPath = resolve(process.cwd(), "..", "contracts", "abi", "mock_erc20.json");
+    const rawMock = readFileSync(altMockPath, "utf-8");
+    const parsedMock = JSON.parse(rawMock);
+    mockErc20Abi = Array.isArray(parsedMock) ? parsedMock : (parsedMock.abi || []);
+    console.log(`[Starknet] MockERC20 ABI loaded from alt path (${mockErc20Abi.length} entries)`);
+  } catch {
+    console.warn("[Starknet] Could not load MockERC20 ABI — faucet will not work");
+  }
+}
+
+/**
+ * Faucet: mint mock tokens (oETH / oSEP) directly to a user's wallet.
+ * Uses mint_to(to, amount) on the MockERC20 contract.
+ */
+export async function faucetMintTokens(
+  recipientAddress: string,
+  symbol: "oETH" | "oSEP",
+  amount: bigint
+): Promise<string | null> {
+  const account = getOperatorAccount();
+  if (!account || mockErc20Abi.length === 0) {
+    console.log(`[Starknet] SIMULATED faucet mint ${symbol} to ${recipientAddress}`);
+    return null;
+  }
+
+  const tokenAddress = TOKEN_ADDRESSES[symbol];
+  if (!tokenAddress) throw new Error(`Unknown mock token: ${symbol}`);
+
+  const tokenContract = new Contract({
+    abi: mockErc20Abi,
+    address: tokenAddress,
+    providerOrAccount: account,
+  });
+
+  try {
+    // u256 is passed as { low, high } or as two felts in starknet.js v9
+    const result = await tokenContract.invoke("mint_to", [
+      recipientAddress,
+      amount,
+    ]);
+    await getProvider().waitForTransaction(result.transaction_hash);
+    console.log(`[Starknet] Faucet minted ${amount} ${symbol} to ${recipientAddress}: ${result.transaction_hash}`);
+    return result.transaction_hash;
+  } catch (err: any) {
+    console.error(`[Starknet] Faucet mint failed:`, err);
+    throw new Error(`Faucet mint failed: ${err.message || err}`);
   }
 }
 

@@ -43,12 +43,12 @@ const colorMap: Record<string, string> = {
 
 export default function DashboardOverviewPage() {
   const { walletAddress } = useWallet();
-  const [period, setPeriod] = useState(0);
+  const [period, setPeriod] = useState("24h");
   const [liveEventIndex, setLiveEventIndex] = useState(0);
 
   const { data, loading, refresh } = useApi(
-    () => dashboardApi.getOverview(walletAddress ?? undefined),
-    [walletAddress]
+    () => dashboardApi.getOverview(walletAddress ?? undefined, period),
+    [walletAddress, period]
   );
 
   useWebSocket(
@@ -68,6 +68,14 @@ export default function DashboardOverviewPage() {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="w-8 h-8 border-2 border-cobalt border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!data && !loading) {
+    return (
+      <div className="flex items-center justify-center h-64 text-[#64748b]">
+        Failed to load dashboard data. Please try refreshing.
       </div>
     );
   }
@@ -136,14 +144,14 @@ export default function DashboardOverviewPage() {
               <p className="text-xs text-[#475569]">Anonymized liquidity density across the dark pool</p>
             </div>
             <div className="flex gap-2">
-              {["24H", "7D", "30D"].map((p, i) => (
+              {(["24h", "7d", "30d"] as const).map((p) => (
                 <button
                   key={p}
-                  onClick={() => setPeriod(i)}
+                  onClick={() => setPeriod(p)}
                   className={`px-3 py-1 text-xs rounded-lg transition-colors ${
-                    period === i ? "bg-cobalt/10 text-cobalt border border-cobalt/20" : "text-[#475569] hover:text-white"
+                    period === p ? "bg-cobalt/10 text-cobalt border border-cobalt/20" : "text-[#475569] hover:text-white"
                   }`}
-                >{p}</button>
+                >{p.toUpperCase()}</button>
               ))}
             </div>
           </div>

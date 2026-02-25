@@ -49,10 +49,13 @@ export const userApi = {
 
 // ─── Dashboard ─────────────────────────────────────────
 export const dashboardApi = {
-  getOverview: (walletAddress?: string) =>
-    get<any>(
-      `/dashboard/overview${walletAddress ? `?walletAddress=${walletAddress}` : ""}`
-    ),
+  getOverview: (walletAddress?: string, period?: string) => {
+    const params = new URLSearchParams();
+    if (walletAddress) params.set("walletAddress", walletAddress);
+    if (period) params.set("period", period);
+    const qs = params.toString();
+    return get<any>(`/dashboard/overview${qs ? `?${qs}` : ""}`);
+  },
 };
 
 // ─── Vault ─────────────────────────────────────────────
@@ -69,6 +72,10 @@ export const vaultApi = {
     post<any>("/vault/shield", { walletAddress, assetSymbol, amount }),
   unshield: (walletAddress: string, assetSymbol: string, amount: number) =>
     post<any>("/vault/unshield", { walletAddress, assetSymbol, amount }),
+  faucet: (walletAddress: string) =>
+    post<any>("/vault/faucet", { walletAddress }),
+  faucetStatus: (walletAddress: string) =>
+    get<{ claimed: boolean; amounts: Record<string, number> }>(`/vault/faucet/status?walletAddress=${walletAddress}`),
 };
 
 // ─── Orders ────────────────────────────────────────────
@@ -82,10 +89,13 @@ export const orderApi = {
     price: number;
     commitmentHash?: string;
     expiresAt?: string;
+    allowPartialFill?: boolean;
   }) => post<{ order: any }>("/orders/create", params),
   list: (walletAddress: string) =>
     get<{ orders: any[] }>(`/orders/list?walletAddress=${walletAddress}`),
   getPool: () => get<any>("/orders/pool"),
+  cancel: (walletAddress: string, orderId: string) =>
+    post<any>("/orders/cancel", { walletAddress, orderId }),
 };
 
 // ─── Execution / Matching ──────────────────────────────

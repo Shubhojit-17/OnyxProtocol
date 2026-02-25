@@ -15,7 +15,8 @@ export async function connectUser(walletAddress: string) {
         vaultBalances: {
           create: [
             { assetSymbol: "STRK", publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
-            { assetSymbol: "ETH", publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
+            { assetSymbol: "oETH", publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
+            { assetSymbol: "oSEP", publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
           ],
         },
       },

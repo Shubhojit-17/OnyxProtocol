@@ -8,6 +8,8 @@ import {
   unshield,
   getRecentVaultActivity,
 } from "../services/vault.service.js";
+import { faucetMintTokens } from "../services/starknet.service.js";
+import prisma from "../db/prisma.js";
 import {
   depositSchema,
   withdrawSchema,
@@ -126,6 +128,62 @@ router.post("/unshield", async (req: Request, res: Response) => {
     res.json({ balance });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// Fixed faucet amounts (one-time claim)
+const FAUCET_AMOUNTS: Record<string, number> = { oETH: 1, oSEP: 10 };
+
+// GET /api/vault/faucet/status — check if user already claimed
+router.get("/faucet/status", async (req: Request, res: Response) => {
+  try {
+    const walletAddress = req.query.walletAddress as string;
+    if (!walletAddress) { res.status(400).json({ error: "walletAddress required" }); return; }
+    const user = await prisma.user.findUnique({ where: { walletAddress } });
+    res.json({ claimed: user?.faucetClaimed ?? false, amounts: FAUCET_AMOUNTS });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/vault/faucet — one-time mint of 1 oETH + 10 oSEP to vault
+router.post("/faucet", async (req: Request, res: Response) => {
+  try {
+    const { walletAddress } = req.body;
+    if (!walletAddress) {
+      res.status(400).json({ error: "walletAddress is required" });
+      return;
+    }
+
+    // Check if already claimed
+    const user = await prisma.user.findUnique({ where: { walletAddress } });
+    if (!user) { res.status(404).json({ error: "User not found" }); return; }
+    if (user.faucetClaimed) {
+      res.status(400).json({ error: "Faucet already claimed. Each user can only claim once." });
+      return;
+    }
+
+    const results: { symbol: string; txHash: string | null; amount: number }[] = [];
+
+    // Mint both tokens
+    for (const [symbol, amount] of Object.entries(FAUCET_AMOUNTS)) {
+      const tokenAmount = BigInt(Math.floor(amount * 1e18));
+      const txHash = await faucetMintTokens(walletAddress, symbol as "oETH" | "oSEP", tokenAmount);
+      await deposit(walletAddress, symbol, amount);
+      results.push({ symbol, txHash, amount });
+    }
+
+    // Mark as claimed
+    await prisma.user.update({ where: { walletAddress }, data: { faucetClaimed: true } });
+
+    res.json({
+      success: true,
+      claimed: true,
+      results,
+      message: `Minted 1 oETH + 10 oSEP to your vault`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

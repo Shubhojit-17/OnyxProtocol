@@ -3,6 +3,7 @@ import {
   createOrder,
   listOrders,
   getOrderPool,
+  cancelOrder,
 } from "../services/order.service.js";
 import { runMatcher } from "../services/matcher.service.js";
 import { createOrderSchema } from "../utils/validation.js";
@@ -51,6 +52,21 @@ router.get("/pool", async (_req: Request, res: Response) => {
     res.json(pool);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/orders/cancel
+router.post("/cancel", async (req: Request, res: Response) => {
+  try {
+    const { walletAddress, orderId } = req.body;
+    if (!walletAddress || !orderId) {
+      res.status(400).json({ error: "walletAddress and orderId required" });
+      return;
+    }
+    const result = await cancelOrder({ walletAddress, orderId });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
   }
 });
 

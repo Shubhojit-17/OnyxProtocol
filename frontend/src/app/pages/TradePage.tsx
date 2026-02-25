@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Lock,
   Shield,
@@ -6,6 +6,7 @@ import {
   X,
   Check,
   ChevronDown,
+  ChevronUp,
   Info,
   Zap,
   Eye,
@@ -24,11 +25,15 @@ import { orderApi, darkPoolApi } from "../services/api";
 import { useApi } from "../hooks/useApi";
 import { useWallet } from "../hooks/useWallet";
 import { useWebSocket } from "../hooks/useWebSocket";
+import { TRADING_PAIRS } from "../services/starknet.config";
 
 function generatePriceData(midPrice: number) {
+  if (!midPrice || midPrice === 0) return [];
+  // Generate a sine-wave chart oscillating around the exchange rate
+  const amplitude = midPrice * 0.15;
   return Array.from({ length: 48 }, (_, i) => ({
     time: `${Math.floor(i / 2)}:${i % 2 === 0 ? "00" : "30"}`,
-    price: midPrice - 200 + Math.sin(i * 0.3) * 400 + (i * 3),
+    price: midPrice + Math.sin(i * 0.3) * amplitude + (i * midPrice * 0.002),
   }));
 }
 
@@ -47,12 +52,12 @@ const proofMessages = [
 export default function TradePage() {
   const { walletAddress } = useWallet();
   const [orderType, setOrderType] = useState<"BUY" | "SELL">("BUY");
-  const [asset, setAsset] = useState("STRK / ETH");
+  const [selectedPairIdx, setSelectedPairIdx] = useState(0);
   const [amount, setAmount] = useState("");
   const [price, setPrice] = useState("");
   const [expiry, setExpiry] = useState("24h");
   const [privacyLevel, setPrivacyLevel] = useState(100);
-  const [partialFill, setPartialFill] = useState(false);
+  const [partialFill, setPartialFill] = useState(true);
   const [complianceExport, setComplianceExport] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [proofState, setProofState] = useState<"idle" | "generating" | "complete">("idle");
@@ -129,6 +134,27 @@ export default function TradePage() {
     };
   }, [proofState]);
 
+  // Current market exchange rate for the selected pair
+  const marketRate = useMemo(() => {
+    const key = `${TRADING_PAIRS[selectedPairIdx].base}/${TRADING_PAIRS[selectedPairIdx].quote}`;
+    return poolData?.exchangeRates?.[key] || 0;
+  }, [poolData, selectedPairIdx]);
+
+  // Auto-fill price from market rate when amount changes (only if price is empty)
+  useEffect(() => {
+    if (marketRate > 0 && !price) {
+      setPrice(marketRate.toFixed(8));
+    }
+  }, [marketRate, selectedPairIdx]);
+
+  // Computed total in quote asset
+  const totalQuote = useMemo(() => {
+    const a = parseFloat(amount);
+    const p = parseFloat(price);
+    if (!a || !p || a <= 0 || p <= 0) return 0;
+    return a * p;
+  }, [amount, price]);
+
   const [formError, setFormError] = useState<string | null>(null);
 
   const handleGenerateCommitment = async () => {
@@ -145,7 +171,12 @@ export default function TradePage() {
     setShowModal(true);
     setSubmitting(true);
 
-    const [assetIn, assetOut] = asset.split(" / ").map((s) => s.trim());
+    // Derive assets from selected trading pair
+    const pair = TRADING_PAIRS[selectedPairIdx];
+    // BUY base: spend quote (assetIn) → receive base (assetOut)
+    // SELL base: spend base (assetIn) → receive quote (assetOut)
+    const assetIn = orderType === "BUY" ? pair.quote : pair.base;
+    const assetOut = orderType === "BUY" ? pair.base : pair.quote;
     const expiryDate = new Date();
     if (expiry === "1h") expiryDate.setHours(expiryDate.getHours() + 1);
     else if (expiry === "24h") expiryDate.setHours(expiryDate.getHours() + 24);
@@ -160,6 +191,7 @@ export default function TradePage() {
         amount: parseFloat(amount),
         price: parseFloat(price),
         expiresAt: expiryDate.toISOString(),
+        allowPartialFill: partialFill,
       });
       setCommitmentHash(order.commitmentHash);
       refreshOrders();
@@ -225,50 +257,131 @@ export default function TradePage() {
               ))}
             </div>
 
-            {/* Asset Selector */}
+            {/* Asset Pair Selector */}
             <div className="mb-4">
               <label className="text-xs text-[#64748b] mb-2 block">Asset Pair</label>
               <div className="relative">
                 <select
-                  value={asset}
-                  onChange={(e) => setAsset(e.target.value)}
-                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-3 text-sm text-white appearance-none focus:outline-none focus:border-cobalt/40"
+                  value={selectedPairIdx}
+                  onChange={(e) => setSelectedPairIdx(Number(e.target.value))}
+                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-3 text-sm text-white appearance-none pr-10 focus:outline-none focus:border-cobalt/40"
                 >
-                  <option value="STRK / ETH">STRK / ETH</option>
-                  <option value="ETH / STRK">ETH / STRK</option>
+                  {TRADING_PAIRS.map((p, i) => (
+                    <option key={p.label} value={i} className="bg-[#111827] text-white">{p.label}</option>
+                  ))}
                 </select>
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#475569] pointer-events-none" />
               </div>
+              <p className="text-[10px] text-[#475569] mt-1">
+                {orderType === "BUY"
+                  ? `Buy ${TRADING_PAIRS[selectedPairIdx].base} — pay with ${TRADING_PAIRS[selectedPairIdx].quote}`
+                  : `Sell ${TRADING_PAIRS[selectedPairIdx].base} — receive ${TRADING_PAIRS[selectedPairIdx].quote}`}
+              </p>
             </div>
 
-            {/* Amount */}
+            {/* Amount (in base asset) */}
             <div className="mb-4">
-              <label className="text-xs text-[#64748b] mb-2 block">Amount</label>
-              <div className="relative">
+              <label className="text-xs text-[#64748b] mb-2 block">Amount ({TRADING_PAIRS[selectedPairIdx].base})</label>
+              <div className="relative group">
                 <input
                   type="number"
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                   placeholder="0.00"
-                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-3 text-sm text-white placeholder-[#334155] focus:outline-none focus:border-cobalt/40"
+                  step="1"
+                  min="0"
+                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-3 pr-20 text-sm text-white placeholder-[#334155] focus:outline-none focus:border-cobalt/40 no-spinners"
                 />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#475569]">STRK</span>
+                <span className="absolute right-12 top-1/2 -translate-y-1/2 text-xs text-[#475569]">{TRADING_PAIRS[selectedPairIdx].base}</span>
+                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col">
+                  <button
+                    type="button"
+                    onClick={() => setAmount(String(Math.max(0, (parseFloat(amount) || 0) + 1)))}
+                    className="p-0.5 text-[#475569] hover:text-white transition-colors"
+                  >
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAmount(String(Math.max(0, (parseFloat(amount) || 0) - 1)))}
+                    className="p-0.5 text-[#475569] hover:text-white transition-colors"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
 
-            {/* Limit Price */}
+            {/* Limit Price (quote per base) */}
             <div className="mb-4">
-              <label className="text-xs text-[#64748b] mb-2 block">Limit Price</label>
-              <div className="relative">
+              <label className="text-xs text-[#64748b] mb-2 block flex items-center justify-between">
+                <span>Limit Price ({TRADING_PAIRS[selectedPairIdx].quote} per {TRADING_PAIRS[selectedPairIdx].base})</span>
+                {marketRate > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setPrice(marketRate.toFixed(8))}
+                    className="text-cobalt hover:text-blue-400 transition-colors text-[10px]"
+                  >
+                    Use Market Price
+                  </button>
+                )}
+              </label>
+              <div className="relative group">
                 <input
                   type="number"
                   value={price}
                   onChange={(e) => setPrice(e.target.value)}
-                  placeholder="0.4250"
-                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-3 text-sm text-white placeholder-[#334155] focus:outline-none focus:border-cobalt/40"
+                  placeholder={marketRate ? marketRate.toFixed(8) : "0.00"}
+                  step={marketRate > 1 ? "0.01" : marketRate > 0.001 ? "0.0001" : "0.00000001"}
+                  min="0"
+                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-3 pr-20 text-sm text-white placeholder-[#334155] focus:outline-none focus:border-cobalt/40 no-spinners"
                 />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#475569]">ETH</span>
+                <span className="absolute right-12 top-1/2 -translate-y-1/2 text-xs text-[#475569]">{TRADING_PAIRS[selectedPairIdx].quote}</span>
+                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const step = marketRate > 1 ? 0.01 : marketRate > 0.001 ? 0.0001 : 0.00000001;
+                      setPrice(String(Math.max(0, (parseFloat(price) || 0) + step)));
+                    }}
+                    className="p-0.5 text-[#475569] hover:text-white transition-colors"
+                  >
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const step = marketRate > 1 ? 0.01 : marketRate > 0.001 ? 0.0001 : 0.00000001;
+                      setPrice(String(Math.max(0, (parseFloat(price) || 0) - step)));
+                    }}
+                    className="p-0.5 text-[#475569] hover:text-white transition-colors"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
+            </div>
+
+            {/* Total (equivalent quote amount) */}
+            <div className="mb-5 p-3 rounded-xl bg-white/[0.02] border border-white/[0.04]">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-[#475569]">
+                  {orderType === "BUY" ? "Total you pay" : "Total you receive"}
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-white" style={{ fontFamily: "var(--font-mono)" }}>
+                    {totalQuote > 0 ? totalQuote.toFixed(8) : "—"}
+                  </span>
+                  <span className="text-xs text-[#475569]">{TRADING_PAIRS[selectedPairIdx].quote}</span>
+                </div>
+              </div>
+              {totalQuote > 0 && poolData?.prices && (
+                <div className="text-right mt-1">
+                  <span className="text-[10px] text-[#475569]" style={{ fontFamily: "var(--font-mono)" }}>
+                    ≈ ${(totalQuote * (poolData.prices[TRADING_PAIRS[selectedPairIdx].quote] || 0)).toFixed(2)} USD
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Expiry */}
@@ -423,13 +536,21 @@ export default function TradePage() {
         <div className="lg:col-span-3 p-6 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h3 className="text-white mb-1">STRK / ETH</h3>
+              <h3 className="text-white mb-1">{TRADING_PAIRS[selectedPairIdx].label}</h3>
               <div className="flex items-center gap-3">
                 <span className="text-2xl text-white" style={{ fontFamily: "var(--font-mono)" }}>
-                  {poolData?.midPrice || "—"}
+                  {poolData?.exchangeRates?.[`${TRADING_PAIRS[selectedPairIdx].base}/${TRADING_PAIRS[selectedPairIdx].quote}`]?.toFixed(8) || "—"}
                 </span>
+                <span className="text-xs text-[#475569]">{TRADING_PAIRS[selectedPairIdx].quote}</span>
                 <span className="text-sm text-acid-green">{poolData ? "Live" : "—"}</span>
               </div>
+              {poolData?.prices && (
+                <div className="text-xs text-[#475569] mt-1">
+                  {TRADING_PAIRS[selectedPairIdx].base} ${poolData.prices[TRADING_PAIRS[selectedPairIdx].base]?.toFixed(4) || "—"}
+                  {" · "}
+                  {TRADING_PAIRS[selectedPairIdx].quote} ${poolData.prices[TRADING_PAIRS[selectedPairIdx].quote]?.toFixed(4) || "—"}
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.06]">
               <Info className="w-3.5 h-3.5 text-[#475569]" />
@@ -438,7 +559,9 @@ export default function TradePage() {
           </div>
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={generatePriceData(poolData?.midPriceRaw || 0)}>
+              <AreaChart data={generatePriceData(
+                  poolData?.exchangeRates?.[`${TRADING_PAIRS[selectedPairIdx].base}/${TRADING_PAIRS[selectedPairIdx].quote}`] || 0
+                )}>
                 <defs>
                   <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#4ade80" stopOpacity={0.2} />
@@ -454,12 +577,12 @@ export default function TradePage() {
                   axisLine={false}
                 />
                 <YAxis
-                  domain={["dataMin - 100", "dataMax + 100"]}
+                  domain={["auto", "auto"]}
                   stroke="rgba(255,255,255,0.1)"
                   tick={{ fill: "#475569", fontSize: 11 }}
                   tickLine={false}
                   axisLine={false}
-                  tickFormatter={(v: number) => `$${(v / 1000).toFixed(1)}k`}
+                  tickFormatter={(v: number) => v < 0.001 ? v.toExponential(2) : v.toFixed(6)}
                 />
                 <Tooltip
                   contentStyle={{
@@ -469,7 +592,7 @@ export default function TradePage() {
                     color: "#f1f5f9",
                     fontSize: "12px",
                   }}
-                  formatter={(value: number) => [`$${value.toFixed(2)}`, "Price"]}
+                  formatter={(value: number) => [value < 0.001 ? value.toExponential(4) : value.toFixed(8), TRADING_PAIRS[selectedPairIdx].label]}
                 />
                 <Area type="monotone" dataKey="price" stroke="#4ade80" fill="url(#priceGradient)" strokeWidth={2} />
               </AreaChart>

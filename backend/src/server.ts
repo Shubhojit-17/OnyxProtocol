@@ -4,7 +4,7 @@ import cors from "cors";
 import { createServer } from "http";
 import rateLimit from "express-rate-limit";
 import { wsManager } from "./websocket/manager.js";
-import { runMatcher } from "./services/matcher.service.js";
+import { runMatcher, startStuckMatchRetry } from "./services/matcher.service.js";
 import { isStarknetEnabled } from "./services/starknet.service.js";
 
 // Routes
@@ -23,12 +23,20 @@ const app = express();
 const server = createServer(app);
 
 // Middleware
+const allowedOrigins = [
+  /^https?:\/\/localhost(:\d+)?$/,
+  ...(process.env.CORS_ORIGIN ? [process.env.CORS_ORIGIN] : []),
+];
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (e.g. curl, mobile apps) and any localhost origin in dev
-      if (!origin || /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
-        callback(null, origin || true);
+      // Allow requests with no origin (e.g. curl, mobile apps)
+      if (!origin) return callback(null, true);
+      const isAllowed = allowedOrigins.some((o) =>
+        o instanceof RegExp ? o.test(origin) : o === origin
+      );
+      if (isAllowed) {
+        callback(null, origin);
       } else {
         callback(new Error("Not allowed by CORS"));
       }
@@ -72,7 +80,7 @@ wsManager.init(server);
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   const starknetStatus = isStarknetEnabled() ? "✅ LIVE (Starknet Sepolia)" : "⚠️  Simulated (set STARKNET env vars for on-chain)";
   console.log(`
   ┌─────────────────────────────────────────────────────────┐
@@ -89,6 +97,9 @@ server.listen(PORT, () => {
   setInterval(() => {
     runMatcher().catch((err) => console.error("Periodic matcher error:", err));
   }, 10_000);
+
+  // Start periodic stuck match retry (every 30s)
+  startStuckMatchRetry();
 });
 
 export { app, server };

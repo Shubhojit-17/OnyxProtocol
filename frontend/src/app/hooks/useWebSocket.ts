@@ -4,7 +4,9 @@ import { createWebSocket } from "../services/api";
 type WSEventType =
   | "order:created"
   | "order:matched"
+  | "order:cancelled"
   | "proof:generating"
+  | "proof:generated"
   | "proof:verified"
   | "settlement:confirmed"
   | "activity:new"

@@ -4,9 +4,16 @@ import { motion } from "motion/react";
 import { darkPoolApi } from "../services/api";
 import { useApi } from "../hooks/useApi";
 import { useWebSocket } from "../hooks/useWebSocket";
+import { TRADING_PAIRS, SUPPORTED_TOKENS } from "../services/starknet.config";
+
+const TOKEN_DESCRIPTIONS: Record<string, string> = {
+  STRK: "Starknet Token",
+  oETH: "Mirrors ETH price",
+  oSEP: "Stablecoin ($1.00)",
+};
 
 export default function DarkPoolPage() {
-  const [assetPair, setAssetPair] = useState("STRK / ETH");
+  const [selectedPairIdx, setSelectedPairIdx] = useState(0);
   const [timeRange, setTimeRange] = useState("24H");
   const [intensity, setIntensity] = useState(70);
   const [hoveredCell, setHoveredCell] = useState<{ row: number; col: number } | null>(null);
@@ -87,11 +94,12 @@ export default function DarkPoolPage() {
           </div>
           <div className="flex items-center gap-2">
             <div className="text-xl text-white" style={{ fontFamily: "var(--font-mono)" }}>
-              {poolStats?.midPrice || "—"}
+              {poolStats?.exchangeRates?.[`${TRADING_PAIRS[selectedPairIdx].base}/${TRADING_PAIRS[selectedPairIdx].quote}`]?.toFixed(8) || poolStats?.midPrice || "—"}
             </div>
             <span className="text-xs text-acid-green">{poolStats?.oracle || "Pragma Oracle"}</span>
-          </div>
-        </div>
+          </div>          <div className="text-[10px] text-[#475569] mt-1">
+            {TRADING_PAIRS[selectedPairIdx].label}
+          </div>        </div>
         <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
           <div className="flex items-center gap-2 mb-2">
             <Zap className="w-4 h-4 text-cobalt" />
@@ -127,14 +135,23 @@ export default function DarkPoolPage() {
               <label className="text-xs text-[#475569] mb-2 block">Asset Pair</label>
               <div className="relative">
                 <select
-                  value={assetPair}
-                  onChange={(e) => setAssetPair(e.target.value)}
-                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5 text-sm text-white appearance-none focus:outline-none focus:border-cobalt/40"
+                  value={selectedPairIdx}
+                  onChange={(e) => setSelectedPairIdx(Number(e.target.value))}
+                  className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-2.5 text-sm text-white appearance-none pr-8 focus:outline-none focus:border-cobalt/40"
                 >
-                  <option value="STRK / ETH">STRK / ETH</option>
-                  <option value="ETH / STRK">ETH / STRK</option>
+                  {TRADING_PAIRS.map((p, i) => (
+                    <option key={p.label} value={i} className="bg-[#111827] text-white">{p.label}</option>
+                  ))}
                 </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#475569] pointer-events-none" />
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#475569] pointer-events-none" />
+              </div>
+              <div className="mt-2 space-y-1">
+                <div className="text-[10px] text-[#475569]">
+                  <span className="text-[#94a3b8]">{TRADING_PAIRS[selectedPairIdx].base}</span> — {TOKEN_DESCRIPTIONS[TRADING_PAIRS[selectedPairIdx].base] || ""}
+                </div>
+                <div className="text-[10px] text-[#475569]">
+                  <span className="text-[#94a3b8]">{TRADING_PAIRS[selectedPairIdx].quote}</span> — {TOKEN_DESCRIPTIONS[TRADING_PAIRS[selectedPairIdx].quote] || ""}
+                </div>
               </div>
             </div>
 
@@ -175,6 +192,24 @@ export default function DarkPoolPage() {
           </div>
 
           {/* Legend */}
+          <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
+            <h4 className="text-white text-sm mb-3">Token Info</h4>
+            <div className="space-y-2">
+              {SUPPORTED_TOKENS.map((t) => (
+                <div key={t.symbol} className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: t.color }} />
+                  <span className="text-xs text-white">{t.symbol}</span>
+                  <span className="text-[10px] text-[#475569]">{t.name}</span>
+                </div>
+              ))}
+              <div className="mt-2 pt-2 border-t border-white/[0.06] space-y-1">
+                <p className="text-[10px] text-[#475569]"><span className="text-[#94a3b8]">oETH</span> mirrors real ETH price (~${poolStats?.prices?.oETH?.toFixed(0) || "—"})</p>
+                <p className="text-[10px] text-[#475569]"><span className="text-[#94a3b8]">oSEP</span> pegged at $1.00 (stablecoin)</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Density Legend */}
           <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
             <h4 className="text-white text-sm mb-3">Density Legend</h4>
             <div className="flex items-center gap-1">
@@ -223,7 +258,7 @@ export default function DarkPoolPage() {
             <div>
               <h3 className="text-white mb-1">Liquidity Fog Heatmap</h3>
               <p className="text-xs text-[#475569]">
-                {assetPair} &middot; {timeRange} &middot; Live
+                {TRADING_PAIRS[selectedPairIdx].label} &middot; {timeRange} &middot; Live
               </p>
             </div>
             <div className="flex items-center gap-3">

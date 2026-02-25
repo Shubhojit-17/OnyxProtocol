@@ -97,10 +97,12 @@ export function getERC20WriteContract(tokenAddress: string, account: AccountInte
   return new Contract({ abi: ERC20_ABI as any[], address: tokenAddress, providerOrAccount: account });
 }
 
-// ─── Token decimals (STRK=18, ETH=18) ──────────────────
+// ─── Token decimals (all 18) ──────────────────
 export const TOKEN_DECIMALS: Record<string, number> = {
   STRK: 18,
   ETH: 18,
+  oETH: 18,
+  oSEP: 18,
 };
 
 /** Convert human-readable amount to on-chain uint256 */

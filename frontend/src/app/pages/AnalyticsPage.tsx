@@ -11,9 +11,6 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  ScatterChart,
-  Scatter,
-  ZAxis,
 } from "recharts";
 import { ChevronDown, TrendingUp, Activity, Users, Shield, Zap } from "lucide-react";
 import { motion } from "motion/react";
@@ -83,7 +80,8 @@ export default function AnalyticsPage() {
             >
               <option value="All Assets">All Assets</option>
               <option value="STRK">STRK</option>
-              <option value="ETH">ETH</option>
+              <option value="oETH">oETH</option>
+              <option value="oSEP">oSEP</option>
             </select>
             <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#475569] pointer-events-none" />
           </div>
@@ -194,7 +192,7 @@ export default function AnalyticsPage() {
                   tick={{ fill: "#475569", fontSize: 10 }}
                   tickLine={false}
                   axisLine={false}
-                  tickFormatter={(v: number) => `$${(v / 1000000).toFixed(1)}M`}
+                  tickFormatter={(v: number) => v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M` : v >= 1000 ? `$${(v / 1000).toFixed(1)}K` : `$${v.toFixed(0)}`}
                 />
                 <Tooltip
                   contentStyle={{
@@ -204,7 +202,7 @@ export default function AnalyticsPage() {
                     color: "#f1f5f9",
                     fontSize: "12px",
                   }}
-                  formatter={(value: number) => [`$${(value / 1000000).toFixed(2)}M`]}
+                  formatter={(value: number) => [value >= 1_000_000 ? `$${(value / 1_000_000).toFixed(2)}M` : value >= 1000 ? `$${(value / 1000).toFixed(1)}K` : `$${value.toFixed(2)}`]}
                 />
                 <Bar dataKey="volume" fill="rgba(37, 99, 235, 0.3)" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="shielded" fill="#2563eb" radius={[4, 4, 0, 0]} />
@@ -290,6 +288,10 @@ export default function AnalyticsPage() {
                     <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.4} />
                     <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
                   </linearGradient>
+                  <linearGradient id="oSEPGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.4} />
+                    <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
+                  </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
                 <XAxis
@@ -316,6 +318,7 @@ export default function AnalyticsPage() {
                 />
                 <Area type="monotone" dataKey="strk" stackId="1" stroke="#2563eb" fill="url(#strkGrad)" strokeWidth={1.5} />
                 <Area type="monotone" dataKey="eth" stackId="1" stroke="#8b5cf6" fill="url(#ethGrad)" strokeWidth={1.5} />
+                <Area type="monotone" dataKey="oSEP" stackId="1" stroke="#f59e0b" fill="url(#oSEPGrad)" strokeWidth={1.5} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -324,7 +327,10 @@ export default function AnalyticsPage() {
               <div className="w-3 h-3 rounded-sm bg-cobalt" /> STRK
             </div>
             <div className="flex items-center gap-2 text-xs text-[#475569]">
-              <div className="w-3 h-3 rounded-sm bg-[#8b5cf6]" /> ETH
+              <div className="w-3 h-3 rounded-sm bg-[#8b5cf6]" /> oETH
+            </div>
+            <div className="flex items-center gap-2 text-xs text-[#475569]">
+              <div className="w-3 h-3 rounded-sm bg-[#f59e0b]" /> oSEP
             </div>
           </div>
         </div>
@@ -355,7 +361,7 @@ export default function AnalyticsPage() {
                   tick={{ fill: "#475569", fontSize: 10 }}
                   tickLine={false}
                   axisLine={false}
-                  tickFormatter={(v: number) => `$${(v / 1000000).toFixed(1)}M`}
+                  tickFormatter={(v: number) => v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M` : v >= 1000 ? `$${(v / 1000).toFixed(1)}K` : `$${v.toFixed(0)}`}
                 />
                 <Tooltip
                   contentStyle={{
@@ -365,7 +371,7 @@ export default function AnalyticsPage() {
                     color: "#f1f5f9",
                     fontSize: "12px",
                   }}
-                  formatter={(value: number) => [`$${(value / 1000000).toFixed(2)}M`, "TVL"]}
+                  formatter={(value: number) => [value >= 1_000_000 ? `$${(value / 1_000_000).toFixed(2)}M` : value >= 1000 ? `$${(value / 1000).toFixed(1)}K` : `$${value.toFixed(2)}`, "TVL"]}
                 />
                 <Area type="monotone" dataKey="liquidity" stroke="#2563eb" fill="url(#liqGradient)" strokeWidth={2} />
               </AreaChart>

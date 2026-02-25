@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Lock,
   CircleDot,
@@ -13,9 +13,12 @@ import {
   ChevronUp,
   Inbox,
   Play,
+  Trash2,
+  X,
+  Loader2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { executionApi } from "../services/api";
+import { executionApi, orderApi } from "../services/api";
 import { useApi, useMutation } from "../hooks/useApi";
 import { useWallet } from "../hooks/useWallet";
 import { useWebSocket } from "../hooks/useWebSocket";
@@ -34,6 +37,7 @@ export default function ExecutionPage() {
   const [expandedExec, setExpandedExec] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [proofModal, setProofModal] = useState<any>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const { data: timelineData, refresh: refreshTimeline } = useApi(
     () => walletAddress ? executionApi.getTimeline(walletAddress) : Promise.resolve({ executions: [] }),
@@ -47,10 +51,25 @@ export default function ExecutionPage() {
 
   useWebSocket(
     useCallback(() => { refreshTimeline(); refreshStats(); }, [refreshTimeline, refreshStats]),
-    ["order:matched", "proof:generating", "proof:verified", "settlement:confirmed"]
+    ["order:matched", "proof:generating", "proof:generated", "proof:verified", "settlement:confirmed", "vault:updated", "order:cancelled"]
   );
 
   const executions: any[] = timelineData?.executions || [];
+
+  // Auto-poll every 3s while there are active (non-settled) executions
+  const hasActiveRef = useRef(false);
+  hasActiveRef.current = executions.some(
+    (e: any) => e.status && !["Settled", "Expired", "Failed"].includes(e.status)
+  );
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (hasActiveRef.current) {
+        refreshTimeline();
+        refreshStats();
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [refreshTimeline, refreshStats]);
 
   const { mutate: triggerMatcher, loading: matcherRunning } = useMutation(async (_: void) => {
     const res = await executionApi.runMatcher();
@@ -58,6 +77,20 @@ export default function ExecutionPage() {
     refreshStats();
     return res;
   });
+
+  const handleCancel = async (orderId: string) => {
+    if (!walletAddress) return;
+    setCancellingId(orderId);
+    try {
+      await orderApi.cancel(walletAddress, orderId);
+      refreshTimeline();
+      refreshStats();
+    } catch (err: any) {
+      console.error("Cancel failed:", err);
+    } finally {
+      setCancellingId(null);
+    }
+  };
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -176,6 +209,11 @@ export default function ExecutionPage() {
                       >
                         {exec.status}
                       </span>
+                      {exec.isPartialFill && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-amber-accent/10 text-amber-accent">
+                          Partial Fill
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 text-xs text-[#475569]">
                       <span>{exec.pair}</span>
@@ -184,11 +222,51 @@ export default function ExecutionPage() {
                     </div>
                   </div>
                 </div>
-                {isExpanded ? (
-                  <ChevronUp className="w-4 h-4 text-[#475569]" />
-                ) : (
-                  <ChevronDown className="w-4 h-4 text-[#475569]" />
-                )}
+                <div className="flex items-center gap-2">
+                  {exec.status === "Awaiting Match" && (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (cancellingId === exec.orderId) return;
+                        if (cancellingId === `confirm-${exec.orderId}`) {
+                          handleCancel(exec.orderId);
+                        } else {
+                          setCancellingId(`confirm-${exec.orderId}`);
+                          setTimeout(() => setCancellingId((prev) => prev === `confirm-${exec.orderId}` ? null : prev), 4000);
+                        }
+                      }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.currentTarget.click(); }}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                        cancellingId === exec.orderId
+                          ? "bg-white/5 text-[#475569] cursor-wait"
+                          : cancellingId === `confirm-${exec.orderId}`
+                          ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                          : "bg-white/5 text-[#94a3b8] hover:bg-red-500/10 hover:text-red-400"
+                      }`}
+                    >
+                      {cancellingId === exec.orderId ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : cancellingId === `confirm-${exec.orderId}` ? (
+                        <>
+                          <X className="w-3.5 h-3.5" />
+                          <span>Confirm Cancel</span>
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Cancel</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {isExpanded ? (
+                    <ChevronUp className="w-4 h-4 text-[#475569]" />
+                  ) : (
+                    <ChevronDown className="w-4 h-4 text-[#475569]" />
+                  )}
+                </div>
               </button>
 
               {/* Expanded content */}
@@ -263,7 +341,22 @@ export default function ExecutionPage() {
                                         {step.time}
                                       </span>
                                     </div>
-                                    <p className="text-xs text-[#475569] mt-0.5">{step.detail}</p>
+                                    <p className="text-xs text-[#475569] mt-0.5">
+                                      {step.txHash ? (
+                                        <a
+                                          href={`https://sepolia.voyager.online/tx/${step.txHash}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-cobalt hover:text-blue-400 underline underline-offset-2 decoration-cobalt/30 inline-flex items-center gap-1"
+                                          style={{ fontFamily: "var(--font-mono)" }}
+                                        >
+                                          {step.detail}
+                                          <ExternalLink className="w-3 h-3 inline shrink-0" />
+                                        </a>
+                                      ) : (
+                                        step.detail
+                                      )}
+                                    </p>
                                     {step.status === "done" && (
                                       <span className="text-xs text-acid-green mt-0.5 inline-flex items-center gap-1">
                                         <CheckCircle2 className="w-3 h-3" /> Verified
@@ -307,12 +400,12 @@ export default function ExecutionPage() {
                                         </div>
                                       </div>
                                     )}
-                                    {step.status === "active" && step.name === "Match Found" && (
+                                    {step.status === "active" && (step.name === "Searching Pool" || step.name === "Match Found") && (
                                       <div className="flex items-center gap-2 mt-1">
                                         <div className="w-16 h-1 rounded-full bg-white/[0.04] overflow-hidden">
                                           <div className="w-1/2 h-full bg-amber-accent rounded-full animate-pulse" />
                                         </div>
-                                        <span className="text-xs text-amber-accent">Searching pool...</span>
+                                        <span className="text-xs text-amber-accent">Scanning dark pool...</span>
                                       </div>
                                     )}
                                   </div>
@@ -398,18 +491,31 @@ export default function ExecutionPage() {
                                 <label className="text-[10px] text-[#475569] mb-1 block tracking-wider">
                                   TX HASH
                                 </label>
-                                <div className="flex items-center gap-2 p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.04]">
-                                  <span
-                                    className="text-xs text-[#94a3b8] truncate flex-1"
-                                    style={{ fontFamily: "var(--font-mono)" }}
+                                {exec.certificate.fullTxHash ? (
+                                  <a
+                                    href={`https://sepolia.voyager.online/tx/${exec.certificate.fullTxHash}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-2 p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.04] hover:border-cobalt/30 hover:bg-cobalt/5 transition-all group cursor-pointer"
                                   >
-                                    {exec.certificate.txHash}
-                                  </span>
-                                  <ExternalLink
-                                    className="w-3 h-3 text-[#475569] shrink-0 cursor-pointer hover:text-white transition-colors"
-                                    onClick={() => window.open(`https://sepolia.starkscan.co/tx/${exec.certificate.txHash}`, "_blank")}
-                                  />
-                                </div>
+                                    <span
+                                      className="text-xs text-cobalt group-hover:text-blue-400 truncate flex-1 underline underline-offset-2 decoration-cobalt/30"
+                                      style={{ fontFamily: "var(--font-mono)" }}
+                                    >
+                                      {exec.certificate.txHash}
+                                    </span>
+                                    <ExternalLink className="w-3.5 h-3.5 text-cobalt/60 group-hover:text-cobalt shrink-0 transition-colors" />
+                                  </a>
+                                ) : (
+                                  <div className="flex items-center gap-2 p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+                                    <span
+                                      className="text-xs text-[#475569] truncate flex-1"
+                                      style={{ fontFamily: "var(--font-mono)" }}
+                                    >
+                                      Pending...
+                                    </span>
+                                  </div>
+                                )}
                               </div>
 
                               <button
@@ -473,11 +579,24 @@ export default function ExecutionPage() {
                   ["Proof Size", proofModal.proofSize],
                   ["Verifier", proofModal.verifier],
                   ["Time to Verify", proofModal.timeToVerify],
-                  ["TX Hash", proofModal.txHash],
+                  ["TX Hash", proofModal.fullTxHash || proofModal.txHash],
                 ].map(([label, value]) => (
                   <div key={label} className="flex items-center justify-between py-2 border-b border-white/[0.04]">
                     <span className="text-xs text-[#475569]">{label}</span>
-                    <span className="text-xs text-[#94a3b8] max-w-[220px] truncate" style={{ fontFamily: "var(--font-mono)" }}>{value || "—"}</span>
+                    {label === "TX Hash" && value ? (
+                      <a
+                        href={`https://sepolia.voyager.online/tx/${value}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-cobalt hover:text-blue-400 max-w-[220px] truncate underline underline-offset-2 decoration-cobalt/30 flex items-center gap-1"
+                        style={{ fontFamily: "var(--font-mono)" }}
+                      >
+                        {String(value).slice(0, 10)}...{String(value).slice(-8)}
+                        <ExternalLink className="w-3 h-3 shrink-0" />
+                      </a>
+                    ) : (
+                      <span className="text-xs text-[#94a3b8] max-w-[220px] truncate" style={{ fontFamily: "var(--font-mono)" }}>{value || "—"}</span>
+                    )}
                   </div>
                 ))}
               </div>

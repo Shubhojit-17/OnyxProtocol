@@ -5,13 +5,14 @@ import { getAssetPrice, getAllPrices } from "./price.service.js";
  * Dashboard overview: summary stats + activity feed.
  * All values are derived from real DB data and live prices.
  */
-export async function getDashboardOverview(walletAddress?: string) {
+export async function getDashboardOverview(walletAddress?: string, period: string = "24h") {
   // Fetch live prices
   const prices = await getAllPrices();
 
   function assetPriceSync(symbol: string) {
     if (symbol === "STRK") return prices.strk;
-    if (symbol === "ETH") return prices.eth || 0;
+    if (symbol === "ETH" || symbol === "oETH") return prices.oETH || prices.eth || 2500;
+    if (symbol === "oSEP") return prices.oSEP || 1;
     return 1;
   }
 
@@ -26,13 +27,25 @@ export async function getDashboardOverview(walletAddress?: string) {
     totalShieldedUsd += b.shieldedBalance * price;
   }
 
-  // Total STRK equivalent for display
-  const totalStrk = allBalances
-    .filter((b: any) => b.assetSymbol === "STRK")
-    .reduce(
-      (s: number, b: any) => s + b.publicBalance + b.shieldedBalance + b.lockedBalance,
-      0
-    );
+  // Multi-asset vault display
+  const assetTotals: { symbol: string; amount: number; usd: number }[] = [];
+  const assetMap = new Map<string, { amount: number; usd: number }>();
+  for (const b of allBalances) {
+    const price = assetPriceSync(b.assetSymbol);
+    const total = b.publicBalance + b.shieldedBalance + b.lockedBalance;
+    const existing = assetMap.get(b.assetSymbol) || { amount: 0, usd: 0 };
+    existing.amount += total;
+    existing.usd += total * price;
+    assetMap.set(b.assetSymbol, existing);
+  }
+  for (const [symbol, data] of assetMap) {
+    assetTotals.push({ symbol, amount: data.amount, usd: data.usd });
+  }
+  // Pick the highest-value asset for summary display, or show total USD
+  const topAsset = assetTotals.sort((a, b) => b.usd - a.usd)[0];
+  const vaultValueStr = topAsset
+    ? `${topAsset.amount.toFixed(2)} ${topAsset.symbol}`
+    : "0 STRK";
 
   // Active hidden orders
   const activeOrders = await prisma.orderCommitment.count({
@@ -76,8 +89,8 @@ export async function getDashboardOverview(walletAddress?: string) {
     take: 20,
   });
 
-  // Fog data — from real analytics snapshots, or empty if none
-  const fogData = await generateFogData();
+  // Fog data — computed from real activity, period-aware
+  const fogData = await generateFogData(period);
 
   // Fog metrics from data
   const peak = fogData.length > 0 ? Math.max(...fogData.map((d) => d.index)) : 0;
@@ -90,7 +103,7 @@ export async function getDashboardOverview(walletAddress?: string) {
     summaryCards: [
       {
         title: "Total Vault Balance",
-        value: totalStrk > 0 ? `${totalStrk.toFixed(2)} STRK` : "0 STRK",
+        value: vaultValueStr,
         usd: `$${totalVaultUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}`,
         change: "—",
         positive: true,
@@ -131,28 +144,97 @@ export async function getDashboardOverview(walletAddress?: string) {
     privacyScore,
     anonymitySet: anonymitySet.length,
     shieldedRatio: `${shieldedRatio}%`,
-    tvl: tvl > 0 ? `$${(tvl / 1000000).toFixed(1)}M` : "$0",
+    tvl: tvl >= 1_000_000 ? `$${(tvl / 1_000_000).toFixed(1)}M` : tvl >= 1000 ? `$${(tvl / 1000).toFixed(1)}K` : tvl > 0 ? `$${tvl.toFixed(2)}` : "$0",
     systemStatus: "All Systems Operational",
   };
 }
 
-async function generateFogData() {
-  // Use real analytics snapshots if available
-  const snapshots = await prisma.analyticsSnapshot.findMany({
-    orderBy: { date: "desc" },
-    take: 24,
-  });
+async function generateFogData(period: string = "24h") {
+  const now = new Date();
+  const buckets: { hour: string; index: number; liquidity: number }[] = [];
 
-  if (snapshots.length > 0) {
-    return snapshots.reverse().map((s: any, i: number) => ({
-      hour: `${i.toString().padStart(2, "0")}:00`,
-      index: Math.round(s.anonymitySet ?? 0),
-      liquidity: Math.round(s.tvl ?? 0),
-    }));
+  // Get all vault balances for current liquidity
+  const allBalances = await prisma.vaultBalance.findMany();
+  const prices = await getAllPrices();
+
+  function assetPrice(symbol: string): number {
+    if (symbol === "STRK") return prices.strk || 0.31;
+    if (symbol === "ETH" || symbol === "oETH") return prices.oETH || prices.eth || 2500;
+    if (symbol === "oSEP") return prices.oSEP || 1;
+    return 1;
   }
 
-  // No data — return empty array
-  return [];
+  const currentLiquidity = allBalances.reduce(
+    (s: number, b: any) => s + b.shieldedBalance * assetPrice(b.assetSymbol),
+    0
+  );
+
+  const uniqueShielded = new Set(allBalances.filter((b: any) => b.shieldedBalance > 0).map((b: any) => b.userId));
+  const currentAnonymity = uniqueShielded.size;
+
+  // Determine range and bucket size based on period
+  let totalMs: number;
+  let bucketCount: number;
+  let labelFn: (date: Date) => string;
+
+  if (period === "7d") {
+    totalMs = 7 * 24 * 3600000;
+    bucketCount = 7; // 1 bucket per day
+    labelFn = (d) => d.toLocaleDateString("en-US", { weekday: "short" });
+  } else if (period === "30d") {
+    totalMs = 30 * 24 * 3600000;
+    bucketCount = 30; // 1 bucket per day
+    labelFn = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  } else {
+    // 24h — hourly buckets
+    totalMs = 24 * 3600000;
+    bucketCount = 24;
+    labelFn = (d) => `${d.getHours().toString().padStart(2, "0")}:00`;
+  }
+
+  const bucketMs = totalMs / bucketCount;
+  const rangeStart = new Date(now.getTime() - totalMs);
+
+  // Fetch activity & orders for the full range
+  const recentActivity = await prisma.activityEvent.findMany({
+    where: { createdAt: { gte: rangeStart } },
+    select: { createdAt: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const recentOrders = await prisma.orderCommitment.findMany({
+    where: { createdAt: { gte: rangeStart } },
+    select: { createdAt: true },
+  });
+
+  // Activity threshold scales with bucket size (bigger buckets expect more events)
+  const activityThreshold = period === "24h" ? 5 : period === "7d" ? 15 : 20;
+
+  for (let i = bucketCount - 1; i >= 0; i--) {
+    const bucketStart = new Date(now.getTime() - i * bucketMs);
+    const bucketEnd = new Date(now.getTime() - (i - 1) * bucketMs);
+    const label = labelFn(bucketStart);
+
+    const activityInBucket = recentActivity.filter(
+      (a: any) => a.createdAt >= bucketStart && a.createdAt < bucketEnd
+    ).length;
+    const ordersInBucket = recentOrders.filter(
+      (o: any) => o.createdAt >= bucketStart && o.createdAt < bucketEnd
+    ).length;
+
+    const activityWeight = Math.min(1, (activityInBucket + ordersInBucket) / activityThreshold);
+    const baseIndex = currentAnonymity > 0 ? currentAnonymity : 0;
+    const fogIndex = Math.round(baseIndex * (0.3 + 0.7 * activityWeight));
+    const liquidity = Math.round(currentLiquidity * (0.5 + 0.5 * activityWeight));
+
+    buckets.push({
+      hour: label,
+      index: Math.max(fogIndex, activityInBucket > 0 ? 1 : 0),
+      liquidity: Math.max(liquidity, 0),
+    });
+  }
+
+  return buckets;
 }
 
 function getRelativeTime(date: Date): string {

@@ -9,39 +9,46 @@ export const connectSchema = z.object({
   walletAddress: walletAddressSchema,
 });
 
+const SUPPORTED_ASSETS = ["STRK", "oETH", "oSEP"] as const;
+const assetSymbolSchema = z.enum(SUPPORTED_ASSETS, { errorMap: () => ({ message: "Unsupported asset. Use STRK, oETH, or oSEP" }) });
+
 export const depositSchema = z.object({
   walletAddress: walletAddressSchema,
-  assetSymbol: z.string().min(1),
-  amount: z.number().positive(),
+  assetSymbol: assetSymbolSchema,
+  amount: z.number().positive().max(1_000_000, "Amount too large"),
 });
 
 export const withdrawSchema = z.object({
   walletAddress: walletAddressSchema,
-  assetSymbol: z.string().min(1),
-  amount: z.number().positive(),
+  assetSymbol: assetSymbolSchema,
+  amount: z.number().positive().max(1_000_000, "Amount too large"),
 });
 
 export const shieldSchema = z.object({
   walletAddress: walletAddressSchema,
-  assetSymbol: z.string().min(1),
-  amount: z.number().positive(),
+  assetSymbol: assetSymbolSchema,
+  amount: z.number().positive().max(1_000_000, "Amount too large"),
 });
 
 export const unshieldSchema = z.object({
   walletAddress: walletAddressSchema,
-  assetSymbol: z.string().min(1),
-  amount: z.number().positive(),
+  assetSymbol: assetSymbolSchema,
+  amount: z.number().positive().max(1_000_000, "Amount too large"),
 });
 
 export const createOrderSchema = z.object({
   walletAddress: walletAddressSchema,
-  assetIn: z.string().min(1),
-  assetOut: z.string().min(1),
+  assetIn: assetSymbolSchema,
+  assetOut: assetSymbolSchema,
   orderType: z.enum(["BUY", "SELL"]),
-  amount: z.number().positive(),
-  price: z.number().positive(),
+  amount: z.number().positive().max(1_000_000, "Amount too large"),
+  price: z.number().positive().max(1_000_000, "Price too large"),
   commitmentHash: z.string().optional(),
   expiresAt: z.string().datetime().optional(),
+  allowPartialFill: z.boolean().optional().default(true),
+}).refine((data) => data.assetIn !== data.assetOut, {
+  message: "assetIn and assetOut must be different",
+  path: ["assetOut"],
 });
 
 export const generateViewingKeySchema = z.object({
