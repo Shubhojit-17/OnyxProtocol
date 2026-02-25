@@ -224,6 +224,13 @@ function buildSteps(
       detail: txLabel,
       txHash: isSimulated ? undefined : settlement.txHash,
     });
+  } else if (match?.status === "FAILED" || proof?.proofStatus === "FAILED") {
+    steps.push({
+      name: "Settlement",
+      status: "failed",
+      time: "",
+      detail: "Trade failed — tokens refunded to both parties",
+    });
   } else if (proof?.proofStatus === "VERIFIED") {
     steps.push({
       name: "Settlement",

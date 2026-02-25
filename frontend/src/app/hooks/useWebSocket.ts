@@ -5,6 +5,7 @@ type WSEventType =
   | "order:created"
   | "order:matched"
   | "order:cancelled"
+  | "match:failed"
   | "proof:generating"
   | "proof:generated"
   | "proof:verified"

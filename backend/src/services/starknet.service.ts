@@ -129,8 +129,20 @@ function toFelt252(value: string): string {
 }
 
 /**
+ * Check a transaction receipt for REVERTED status and throw if reverted.
+ */
+function assertReceiptSuccess(receipt: any, label: string) {
+  const execStatus = receipt?.execution_status || receipt?.executionStatus;
+  if (execStatus === "REVERTED") {
+    const reason = receipt?.revert_reason || receipt?.revertReason || "unknown";
+    throw new Error(`[Starknet] ${label} transaction REVERTED: ${reason}`);
+  }
+}
+
+/**
  * Submit an order commitment on-chain (operator call).
  * Throws on failure — no simulation fallback.
+ * Entire invoke+wait is wrapped in a single timeout.
  */
 export async function submitCommitmentOnChain(
   commitmentHash: string,
@@ -144,72 +156,70 @@ export async function submitCommitmentOnChain(
     throw new Error(`[Starknet] Cannot submit commitment — contract not available (ABI missing or Starknet not configured)`);
   }
 
-  try {
-    // Convert asset symbols to felt252
-    const assetInFelt = assetToFelt(assetIn);
-    const assetOutFelt = assetToFelt(assetOut);
-    // Truncate commitment hash to fit felt252 (max ~252 bits = 63 hex digits)
-    // Take first 62 hex digits (248 bits) to guarantee it's within range
-    const hashFelt = toFelt252(commitmentHash);
-    // Convert encrypted amount/price to felt252
-    const amountFelt = toFelt252(encryptedAmount);
-    const priceFelt = toFelt252(encryptedPrice);
+  // Wrap the ENTIRE operation (invoke + wait) in a single timeout
+  return withTimeout(
+    (async () => {
+      try {
+        const assetInFelt = assetToFelt(assetIn);
+        const assetOutFelt = assetToFelt(assetOut);
+        const hashFelt = toFelt252(commitmentHash);
+        const amountFelt = toFelt252(encryptedAmount);
+        const priceFelt = toFelt252(encryptedPrice);
 
-    console.log(`[Starknet] submit_commitment: hash=${hashFelt.slice(0, 16)}..., ${assetIn}→${assetOut}`);
-    const result = await contract.invoke("submit_commitment", [
-      hashFelt,
-      assetInFelt,
-      assetOutFelt,
-      amountFelt,
-      priceFelt,
-    ]);
+        console.log(`[Starknet] submit_commitment: hash=${hashFelt.slice(0, 16)}..., ${assetIn}→${assetOut}`);
+        const result = await contract.invoke("submit_commitment", [
+          hashFelt,
+          assetInFelt,
+          assetOutFelt,
+          amountFelt,
+          priceFelt,
+        ]);
 
-    const receipt = await withTimeout(
-      getProvider().waitForTransaction(result.transaction_hash),
-      ON_CHAIN_TIMEOUT_MS,
-      `waitForTransaction(submit_commitment ${result.transaction_hash.slice(0, 16)}...)`
-    );
-    
-    // Extract commitment_id from the event
-    let onChainId = 0;
-    try {
-      // The CommitmentSubmitted event has commitment_id as the first key
-      const events = (receipt as any).events || [];
-      for (const event of events) {
-        if (event.keys && event.keys.length > 1) {
-          // commitment_id is typically in keys[1] (keys[0] is event selector)
-          onChainId = Number(BigInt(event.keys[1]));
-          if (onChainId > 0) break;
+        const receipt = await getProvider().waitForTransaction(result.transaction_hash);
+        assertReceiptSuccess(receipt, "submit_commitment");
+
+        // Extract commitment_id from the event
+        let onChainId = 0;
+        try {
+          const events = (receipt as any).events || [];
+          for (const event of events) {
+            if (event.keys && event.keys.length > 1) {
+              onChainId = Number(BigInt(event.keys[1]));
+              if (onChainId > 0) break;
+            }
+          }
+          if (onChainId === 0) {
+            const readContract = getReadContract();
+            if (readContract) {
+              const count = await readContract.get_commitment_count();
+              onChainId = Number(count);
+            }
+          }
+        } catch (parseErr) {
+          console.warn("[Starknet] Could not parse commitment ID from receipt, reading from contract");
+          const readContract = getReadContract();
+          if (readContract) {
+            const count = await readContract.get_commitment_count();
+            onChainId = Number(count);
+          }
         }
-      }
-      if (onChainId === 0) {
-        // Fallback: read commitment_count from contract
-        const readContract = getReadContract();
-        if (readContract) {
-          const count = await readContract.get_commitment_count();
-          onChainId = Number(count);
-        }
-      }
-    } catch (parseErr) {
-      console.warn("[Starknet] Could not parse commitment ID from receipt, reading from contract");
-      const readContract = getReadContract();
-      if (readContract) {
-        const count = await readContract.get_commitment_count();
-        onChainId = Number(count);
-      }
-    }
 
-    console.log(`[Starknet] Commitment submitted on-chain: id=${onChainId}, tx=${result.transaction_hash}`);
-    return { txHash: result.transaction_hash, onChainId };
-  } catch (err: any) {
-    console.error("[Starknet] Failed to submit commitment on-chain:", err);
-    throw new Error(`[Starknet] submit_commitment failed: ${err?.message || err}`);
-  }
+        console.log(`[Starknet] Commitment submitted on-chain: id=${onChainId}, tx=${result.transaction_hash}`);
+        return { txHash: result.transaction_hash, onChainId };
+      } catch (err: any) {
+        console.error("[Starknet] Failed to submit commitment on-chain:", err);
+        throw new Error(`[Starknet] submit_commitment failed: ${err?.message || err}`);
+      }
+    })(),
+    ON_CHAIN_TIMEOUT_MS,
+    "submit_commitment"
+  );
 }
 
 /**
  * Record a match on-chain (operator call).
  * Throws on failure — no simulation fallback.
+ * Entire invoke+wait is wrapped in a single timeout.
  */
 export async function recordMatchOnChain(
   buyCommitmentOnChainId: number,
@@ -221,55 +231,58 @@ export async function recordMatchOnChain(
     throw new Error(`[Starknet] Cannot record match — contract not available (ABI missing or Starknet not configured)`);
   }
 
-  try {
-    const result = await contract.invoke("record_match", [
-      buyCommitmentOnChainId,
-      sellCommitmentOnChainId,
-      toFelt252(matchedAmount),
-    ]);
-    const receipt = await withTimeout(
-      getProvider().waitForTransaction(result.transaction_hash),
-      ON_CHAIN_TIMEOUT_MS,
-      `waitForTransaction(record_match ${result.transaction_hash.slice(0, 16)}...)`
-    );
-    
-    // Extract match_id from the MatchRecorded event
-    let onChainMatchId = 0;
-    try {
-      const events = (receipt as any).events || [];
-      for (const event of events) {
-        if (event.keys && event.keys.length > 1) {
-          onChainMatchId = Number(BigInt(event.keys[1]));
-          if (onChainMatchId > 0) break;
-        }
-      }
-      if (onChainMatchId === 0) {
-        const readContract = getReadContract();
-        if (readContract) {
-          const count = await readContract.get_match_count();
-          onChainMatchId = Number(count);
-        }
-      }
-    } catch (parseErr) {
-      console.warn("[Starknet] Could not parse match ID from receipt, reading from contract");
-      const readContract = getReadContract();
-      if (readContract) {
-        const count = await readContract.get_match_count();
-        onChainMatchId = Number(count);
-      }
-    }
+  return withTimeout(
+    (async () => {
+      try {
+        const result = await contract.invoke("record_match", [
+          buyCommitmentOnChainId,
+          sellCommitmentOnChainId,
+          toFelt252(matchedAmount),
+        ]);
+        const receipt = await getProvider().waitForTransaction(result.transaction_hash);
+        assertReceiptSuccess(receipt, "record_match");
 
-    console.log(`[Starknet] Match recorded on-chain: matchId=${onChainMatchId}, tx=${result.transaction_hash}`);
-    return { txHash: result.transaction_hash, onChainMatchId };
-  } catch (err: any) {
-    console.error("[Starknet] Failed to record match on-chain:", err);
-    throw new Error(`[Starknet] record_match failed: ${err?.message || err}`);
-  }
+        let onChainMatchId = 0;
+        try {
+          const events = (receipt as any).events || [];
+          for (const event of events) {
+            if (event.keys && event.keys.length > 1) {
+              onChainMatchId = Number(BigInt(event.keys[1]));
+              if (onChainMatchId > 0) break;
+            }
+          }
+          if (onChainMatchId === 0) {
+            const readContract = getReadContract();
+            if (readContract) {
+              const count = await readContract.get_match_count();
+              onChainMatchId = Number(count);
+            }
+          }
+        } catch (parseErr) {
+          console.warn("[Starknet] Could not parse match ID from receipt, reading from contract");
+          const readContract = getReadContract();
+          if (readContract) {
+            const count = await readContract.get_match_count();
+            onChainMatchId = Number(count);
+          }
+        }
+
+        console.log(`[Starknet] Match recorded on-chain: matchId=${onChainMatchId}, tx=${result.transaction_hash}`);
+        return { txHash: result.transaction_hash, onChainMatchId };
+      } catch (err: any) {
+        console.error("[Starknet] Failed to record match on-chain:", err);
+        throw new Error(`[Starknet] record_match failed: ${err?.message || err}`);
+      }
+    })(),
+    ON_CHAIN_TIMEOUT_MS,
+    "record_match"
+  );
 }
 
 /**
  * Settle a match on-chain (operator call).
  * Throws on failure — no simulation fallback.
+ * Entire invoke+wait is wrapped in a single timeout.
  */
 export async function settleMatchOnChain(
   onChainMatchId: number,
@@ -280,25 +293,28 @@ export async function settleMatchOnChain(
     throw new Error(`[Starknet] Cannot settle match — contract not available (ABI missing or Starknet not configured)`);
   }
 
-  try {
-    // Convert proofHash to felt252
-    const proofFelt = toFelt252(proofHash);
-    
-    const result = await contract.invoke("settle_match", [
-      onChainMatchId,
-      proofFelt,
-    ]);
-    const receipt = await withTimeout(
-      getProvider().waitForTransaction(result.transaction_hash),
-      ON_CHAIN_TIMEOUT_MS,
-      `waitForTransaction(settle_match ${result.transaction_hash.slice(0, 16)}...)`
-    );
-    console.log(`[Starknet] Match settled on-chain: ${result.transaction_hash}`);
-    return result.transaction_hash;
-  } catch (err: any) {
-    console.error("[Starknet] Failed to settle match on-chain:", err);
-    throw new Error(`[Starknet] settle_match failed: ${err?.message || err}`);
-  }
+  return withTimeout(
+    (async () => {
+      try {
+        const proofFelt = toFelt252(proofHash);
+
+        const result = await contract.invoke("settle_match", [
+          onChainMatchId,
+          proofFelt,
+        ]);
+        const receipt = await getProvider().waitForTransaction(result.transaction_hash);
+        assertReceiptSuccess(receipt, "settle_match");
+
+        console.log(`[Starknet] Match settled on-chain: ${result.transaction_hash}`);
+        return result.transaction_hash;
+      } catch (err: any) {
+        console.error("[Starknet] Failed to settle match on-chain:", err);
+        throw new Error(`[Starknet] settle_match failed: ${err?.message || err}`);
+      }
+    })(),
+    ON_CHAIN_TIMEOUT_MS,
+    "settle_match"
+  );
 }
 
 // ─── Read Operations ────────────────────────────────────

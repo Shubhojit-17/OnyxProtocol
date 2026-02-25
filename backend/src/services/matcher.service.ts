@@ -26,17 +26,30 @@ let txQueuePromise = Promise.resolve<any>(undefined);
 /**
  * Queue an on-chain operation so they run sequentially (avoids nonce conflicts).
  * Includes a timeout to prevent the queue from blocking forever.
+ * If the timeout fires, the queue chain is reset so future operations aren't blocked.
  */
 const TX_QUEUE_TIMEOUT_MS = 90_000; // 90 seconds max per queued Starknet tx
 
 function queueOnChainTx<T>(fn: () => Promise<T>): Promise<T> {
-  const p = txQueuePromise.then(fn, fn); // run even if previous fails
+  // Create a promise that auto-resolves after timeout so the queue doesn't stay blocked
+  const queueSlot = new Promise<void>((resolve) => {
+    txQueuePromise
+      .then(() => resolve())
+      .catch(() => resolve());
+
+    // Safety: if the previous item hangs, release the queue after timeout
+    setTimeout(resolve, TX_QUEUE_TIMEOUT_MS);
+  });
+
+  const p = queueSlot.then(fn);
   txQueuePromise = p.catch(() => {}); // swallow errors in chain
 
-  // Wrap with timeout to prevent queue from blocking forever
+  // Wrap with timeout so the caller isn't stuck forever
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error("[queueOnChainTx] Operation timed out after 90s"));
+      // Reset the queue so future txs aren't blocked by this failed operation
+      txQueuePromise = Promise.resolve(undefined);
+      reject(new Error("[queueOnChainTx] Operation timed out after 90s — queue reset"));
     }, TX_QUEUE_TIMEOUT_MS);
     p.then(
       (val) => { clearTimeout(timer); resolve(val); },
@@ -642,6 +655,7 @@ async function executeProofPipeline(matchId: string) {
 
 /**
  * Run only the settlement step for a match that's already VERIFIED.
+ * If settlement fails, the match is failed and tokens are refunded.
  */
 async function runSettlementOnly(matchId: string) {
   const proof = await prisma.proof.findUnique({ where: { matchId } });
@@ -665,7 +679,22 @@ async function runSettlementOnly(matchId: string) {
     return;
   }
 
-  await settleMatch(matchId, proof.proofId);
+  try {
+    await settleMatch(matchId, proof.proofId);
+  } catch (err: any) {
+    console.error(`[Settlement] Settlement failed for ${matchId}:`, err?.message || err);
+    // Check if already settled (race condition)
+    const currentMatch = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: { settlement: true },
+    });
+    if (currentMatch?.status === "SETTLED" || currentMatch?.settlement) {
+      console.log(`[Settlement] Match ${matchId} settled despite error`);
+      return;
+    }
+    // Fail and refund
+    await failMatchAndRefund(matchId, err?.message || "Settlement failed");
+  }
 }
 
 /**
@@ -818,8 +847,21 @@ export function startStuckMatchRetry() {
         }
         if (stuck.proof?.proofStatus === "FAILED") continue;
 
-        // Only retry matches older than 15 seconds to avoid interfering with in-progress pipelines
         const ageMs = Date.now() - stuck.createdAt.getTime();
+
+        // If a match has been stuck for > 3 minutes without settling, fail it and refund
+        if (ageMs > 180_000) {
+          console.log(`[StuckRetry] Match ${stuck.id} stuck for ${Math.round(ageMs / 1000)}s (status=${stuck.status}), failing and refunding`);
+          if (!inFlightMatches.has(stuck.id)) {
+            inFlightMatches.add(stuck.id);
+            failMatchAndRefund(stuck.id, `Pipeline stuck for ${Math.round(ageMs / 1000)}s without completing`)
+              .catch((err) => console.error(`[StuckRetry] Failed to refund stuck match ${stuck.id}:`, err))
+              .finally(() => inFlightMatches.delete(stuck.id));
+          }
+          continue;
+        }
+
+        // Only retry matches older than 15 seconds to avoid interfering with in-progress pipelines
         if (ageMs < 15000) continue;
 
         console.log(`[StuckRetry] Retrying match ${stuck.id} (age=${Math.round(ageMs / 1000)}s, status=${stuck.status}, proof=${stuck.proof?.proofStatus || 'NONE'})`);

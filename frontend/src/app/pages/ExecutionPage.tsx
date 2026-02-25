@@ -16,6 +16,7 @@ import {
   Trash2,
   X,
   Loader2,
+  XCircle,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { executionApi, orderApi } from "../services/api";
@@ -51,7 +52,7 @@ export default function ExecutionPage() {
 
   useWebSocket(
     useCallback(() => { refreshTimeline(); refreshStats(); }, [refreshTimeline, refreshStats]),
-    ["order:matched", "proof:generating", "proof:generated", "proof:verified", "settlement:confirmed", "vault:updated", "order:cancelled"]
+    ["order:matched", "proof:generating", "proof:generated", "proof:verified", "settlement:confirmed", "vault:updated", "order:cancelled", "match:failed"]
   );
 
   const executions: any[] = timelineData?.executions || [];
@@ -174,6 +175,8 @@ export default function ExecutionPage() {
                     className={`w-10 h-10 rounded-xl flex items-center justify-center ${
                       exec.status === "Settled"
                         ? "bg-acid-green/10 border border-acid-green/20"
+                        : exec.status === "Failed"
+                        ? "bg-red-500/10 border border-red-500/20"
                         : exec.status === "Proving" || exec.status === "Verified"
                         ? "bg-cobalt/10 border border-cobalt/20"
                         : exec.status === "Awaiting Match"
@@ -183,6 +186,8 @@ export default function ExecutionPage() {
                   >
                     {exec.status === "Settled" ? (
                       <CheckCircle2 className="w-5 h-5 text-acid-green" />
+                    ) : exec.status === "Failed" ? (
+                      <XCircle className="w-5 h-5 text-red-400" />
                     ) : exec.status === "Proving" || exec.status === "Verified" ? (
                       <Cpu className="w-5 h-5 text-cobalt animate-pulse" />
                     ) : exec.status === "Awaiting Match" ? (
@@ -200,6 +205,8 @@ export default function ExecutionPage() {
                         className={`text-xs px-2 py-0.5 rounded-full ${
                           exec.status === "Settled"
                             ? "bg-acid-green/10 text-acid-green"
+                            : exec.status === "Failed"
+                            ? "bg-red-500/10 text-red-400"
                             : exec.status === "Proving" || exec.status === "Verified"
                             ? "bg-cobalt/10 text-cobalt"
                             : exec.status === "Awaiting Match"
@@ -207,7 +214,7 @@ export default function ExecutionPage() {
                             : "bg-amber-accent/10 text-amber-accent"
                         }`}
                       >
-                        {exec.status}
+                        {exec.status === "Failed" ? "Failed — Refunded" : exec.status}
                       </span>
                       {exec.isPartialFill && (
                         <span className="text-xs px-2 py-0.5 rounded-full bg-amber-accent/10 text-amber-accent">
@@ -303,6 +310,8 @@ export default function ExecutionPage() {
                                         ? "bg-acid-green/10 border border-acid-green/20"
                                         : step.status === "active"
                                         ? "bg-cobalt/10 border border-cobalt/20"
+                                        : step.status === "failed"
+                                        ? "bg-red-500/10 border border-red-500/20"
                                         : "bg-white/[0.02] border border-white/[0.06]"
                                     }`}
                                     style={
@@ -317,6 +326,8 @@ export default function ExecutionPage() {
                                           ? "text-acid-green"
                                           : step.status === "active"
                                           ? "text-cobalt"
+                                          : step.status === "failed"
+                                          ? "text-red-400"
                                           : "text-[#334155]"
                                       }`}
                                     />
@@ -329,6 +340,8 @@ export default function ExecutionPage() {
                                             ? "text-white"
                                             : step.status === "active"
                                             ? "text-cobalt"
+                                            : step.status === "failed"
+                                            ? "text-red-400"
                                             : "text-[#475569]"
                                         }`}
                                       >
@@ -360,6 +373,11 @@ export default function ExecutionPage() {
                                     {step.status === "done" && (
                                       <span className="text-xs text-acid-green mt-0.5 inline-flex items-center gap-1">
                                         <CheckCircle2 className="w-3 h-3" /> Verified
+                                      </span>
+                                    )}
+                                    {step.status === "failed" && (
+                                      <span className="text-xs text-red-400 mt-0.5 inline-flex items-center gap-1">
+                                        <XCircle className="w-3 h-3" /> {step.detail || "Failed"}
                                       </span>
                                     )}
                                     {step.status === "active" && step.name === "Proving" && (
