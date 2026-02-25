@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router";
-import { Shield, Wallet, ArrowRight, Lock, Eye, Radio, CheckCircle2, Cpu, LogOut, AlertTriangle } from "lucide-react";
+import { Shield, Wallet, ArrowRight, Lock, Radio, CheckCircle2, Cpu, LogOut, AlertTriangle } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { useWallet } from "../hooks/useWallet";
 
@@ -320,13 +320,9 @@ export default function ConnectWalletPage() {
           </AnimatePresence>
 
           {!connected && !isConnected && !connecting && (
-            <button
-              onClick={() => navigate("/app")}
-              className="w-full py-3 text-sm text-[#475569] hover:text-[#94a3b8] transition-colors flex items-center justify-center gap-2"
-            >
-              <Eye className="w-4 h-4" />
-              Continue in View-Only Mode
-            </button>
+            <p className="w-full py-3 text-sm text-[#475569] text-center">
+              Connect your wallet to access the dashboard
+            </p>
           )}
         </div>
 
