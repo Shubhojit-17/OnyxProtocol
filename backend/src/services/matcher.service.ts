@@ -283,17 +283,26 @@ async function runMatcherInner() {
   // ══════════════════════════════════════════════════════════════
   // ── PHASE 2: Cross-pair matching ──
   // Match orders across different quote assets (e.g., BUY STRK/oETH ↔ SELL STRK/oSEP)
-  // Both parties must opt in with allowCrossPair = true.
   // The buyer's quote asset is converted to the seller's desired quote asset at
   // market rate, with a 0.5% conversion fee split 50/50 between buyer and seller.
+  // Self-trades are allowed for cross-pair (legitimate portfolio rebalancing).
   // ══════════════════════════════════════════════════════════════
+  try {
   const CROSS_PAIR_FEE_RATE = 0.005; // 0.5% total conversion fee
+
+  // Ensure all CREATED orders allow cross-pair (migrates legacy orders on every run)
+  await prisma.orderCommitment.updateMany({
+    where: { status: "CREATED", allowCrossPair: false },
+    data: { allowCrossPair: true },
+  });
 
   // Re-fetch remaining CREATED orders (some may have been matched in Phase 1)
   const remainingOrders = await prisma.orderCommitment.findMany({
     where: { status: "CREATED" },
     orderBy: { createdAt: "asc" },
   });
+
+  console.log(`[CrossPair] Phase 2: ${remainingOrders.length} CREATED orders remaining after Phase 1`);
 
   // For cross-pair: find BUY and SELL orders that share the same base asset
   // but have different quote assets. E.g.:
@@ -304,6 +313,8 @@ async function runMatcherInner() {
   const crossBuys = remainingOrders.filter((o) => o.orderType === "BUY");
   const crossSells = remainingOrders.filter((o) => o.orderType === "SELL");
   const crossMatchedSellIds = new Set<string>();
+
+  console.log(`[CrossPair] Candidates: ${crossBuys.length} BUY(s), ${crossSells.length} SELL(s)`);
 
   for (const buyOrder of crossBuys) {
     // Re-check this buy order is still CREATED
@@ -325,18 +336,21 @@ async function runMatcherInner() {
       // 1. Same base asset (buyer wants what seller has)
       const buyerWants = freshBuy.assetOut;  // base asset buyer wants
       const sellerHas = freshSell.assetIn;    // base asset seller has
-      if (buyerWants !== sellerHas) continue;
+      if (buyerWants !== sellerHas) {
+        console.log(`[CrossPair] Skip: base mismatch — BUY wants ${buyerWants}, SELL has ${sellerHas}`);
+        continue;
+      }
 
       // 2. Different quote assets (this IS the cross-pair part)
       const buyerPays = freshBuy.assetIn;     // quote asset buyer pays with
       const sellerWants = freshSell.assetOut;  // quote asset seller wants
       if (buyerPays === sellerWants) continue; // same-pair, already handled in Phase 1
 
-      // 3. No self-trades
-      if (freshBuy.userId === freshSell.userId) continue;
+      // Note: Self-trades ARE allowed for cross-pair matching.
+      // In a dark pool, a user may legitimately want to rebalance their portfolio
+      // (e.g., converting oSEP → oETH using STRK as the intermediary base asset).
 
-      // 4. Both parties must allow cross-pair matching (opt-out respected)
-      if (!freshBuy.allowCrossPair || !freshSell.allowCrossPair) continue;
+      console.log(`[CrossPair] Evaluating: BUY ${freshBuy.amount} ${buyerWants} (pay ${buyerPays}) ↔ SELL ${freshSell.amount} ${sellerHas} (want ${sellerWants})`);
 
       // Get market conversion rate: how much sellerWants per 1 buyerPays
       // E.g., buyerPays=oETH, sellerWants=oSEP → rate = oETH_USD / oSEP_USD
@@ -506,6 +520,12 @@ async function runMatcherInner() {
 
       break; // Move to next buy order
     }
+  }
+
+  console.log(`[CrossPair] Phase 2 complete: ${matches.length - (matches.length - crossMatchedSellIds.size)} cross-pair match(es)`);
+  } catch (crossPairErr: any) {
+    console.error(`[CrossPair] Phase 2 error (non-fatal):`, crossPairErr?.message || crossPairErr);
+    // Phase 2 errors should NOT prevent Phase 1 matches or stuck retries from working
   }
 
   // Also resume any stuck matches that haven't completed
