@@ -16,6 +16,19 @@ import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
+// ─── Timeout for on-chain operations ────────────────────
+const ON_CHAIN_TIMEOUT_MS = 60_000; // 60 seconds max per on-chain operation
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`[Starknet] ${label} timed out after ${ms / 1000}s`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ─── ABI ────────────────────────────────────────────────
@@ -117,7 +130,7 @@ function toFelt252(value: string): string {
 
 /**
  * Submit an order commitment on-chain (operator call).
- * Returns { txHash, onChainId } or null if simulated.
+ * Throws on failure — no simulation fallback.
  */
 export async function submitCommitmentOnChain(
   commitmentHash: string,
@@ -125,13 +138,10 @@ export async function submitCommitmentOnChain(
   assetOut: string,
   encryptedAmount: string,
   encryptedPrice: string
-): Promise<{ txHash: string; onChainId: number } | null> {
+): Promise<{ txHash: string; onChainId: number }> {
   const contract = getWriteContract();
   if (!contract) {
-    console.log(
-      `[Starknet] SIMULATED submit_commitment(hash=${commitmentHash.slice(0, 16)}..., ${assetIn}→${assetOut})`
-    );
-    return null;
+    throw new Error(`[Starknet] Cannot submit commitment — contract not available (ABI missing or Starknet not configured)`);
   }
 
   try {
@@ -154,7 +164,11 @@ export async function submitCommitmentOnChain(
       priceFelt,
     ]);
 
-    const receipt = await getProvider().waitForTransaction(result.transaction_hash);
+    const receipt = await withTimeout(
+      getProvider().waitForTransaction(result.transaction_hash),
+      ON_CHAIN_TIMEOUT_MS,
+      `waitForTransaction(submit_commitment ${result.transaction_hash.slice(0, 16)}...)`
+    );
     
     // Extract commitment_id from the event
     let onChainId = 0;
@@ -187,27 +201,24 @@ export async function submitCommitmentOnChain(
 
     console.log(`[Starknet] Commitment submitted on-chain: id=${onChainId}, tx=${result.transaction_hash}`);
     return { txHash: result.transaction_hash, onChainId };
-  } catch (err) {
+  } catch (err: any) {
     console.error("[Starknet] Failed to submit commitment on-chain:", err);
-    return null;
+    throw new Error(`[Starknet] submit_commitment failed: ${err?.message || err}`);
   }
 }
 
 /**
  * Record a match on-chain (operator call).
- * Returns { txHash, onChainMatchId } or null if simulated.
+ * Throws on failure — no simulation fallback.
  */
 export async function recordMatchOnChain(
   buyCommitmentOnChainId: number,
   sellCommitmentOnChainId: number,
   matchedAmount: string
-): Promise<{ txHash: string; onChainMatchId: number } | null> {
+): Promise<{ txHash: string; onChainMatchId: number }> {
   const contract = getWriteContract();
   if (!contract) {
-    console.log(
-      `[Starknet] SIMULATED record_match(buy=${buyCommitmentOnChainId}, sell=${sellCommitmentOnChainId})`
-    );
-    return null;
+    throw new Error(`[Starknet] Cannot record match — contract not available (ABI missing or Starknet not configured)`);
   }
 
   try {
@@ -216,7 +227,11 @@ export async function recordMatchOnChain(
       sellCommitmentOnChainId,
       toFelt252(matchedAmount),
     ]);
-    const receipt = await getProvider().waitForTransaction(result.transaction_hash);
+    const receipt = await withTimeout(
+      getProvider().waitForTransaction(result.transaction_hash),
+      ON_CHAIN_TIMEOUT_MS,
+      `waitForTransaction(record_match ${result.transaction_hash.slice(0, 16)}...)`
+    );
     
     // Extract match_id from the MatchRecorded event
     let onChainMatchId = 0;
@@ -246,26 +261,23 @@ export async function recordMatchOnChain(
 
     console.log(`[Starknet] Match recorded on-chain: matchId=${onChainMatchId}, tx=${result.transaction_hash}`);
     return { txHash: result.transaction_hash, onChainMatchId };
-  } catch (err) {
+  } catch (err: any) {
     console.error("[Starknet] Failed to record match on-chain:", err);
-    return null;
+    throw new Error(`[Starknet] record_match failed: ${err?.message || err}`);
   }
 }
 
 /**
  * Settle a match on-chain (operator call).
- * Returns the transaction hash or null if simulated/failed.
+ * Throws on failure — no simulation fallback.
  */
 export async function settleMatchOnChain(
   onChainMatchId: number,
   proofHash: string
-): Promise<string | null> {
+): Promise<string> {
   const contract = getWriteContract();
   if (!contract) {
-    console.log(
-      `[Starknet] SIMULATED settle_match(matchId=${onChainMatchId}, proof=${proofHash.slice(0, 16)}...)`
-    );
-    return null;
+    throw new Error(`[Starknet] Cannot settle match — contract not available (ABI missing or Starknet not configured)`);
   }
 
   try {
@@ -276,12 +288,16 @@ export async function settleMatchOnChain(
       onChainMatchId,
       proofFelt,
     ]);
-    const receipt = await getProvider().waitForTransaction(result.transaction_hash);
+    const receipt = await withTimeout(
+      getProvider().waitForTransaction(result.transaction_hash),
+      ON_CHAIN_TIMEOUT_MS,
+      `waitForTransaction(settle_match ${result.transaction_hash.slice(0, 16)}...)`
+    );
     console.log(`[Starknet] Match settled on-chain: ${result.transaction_hash}`);
     return result.transaction_hash;
-  } catch (err) {
+  } catch (err: any) {
     console.error("[Starknet] Failed to settle match on-chain:", err);
-    return null;
+    throw new Error(`[Starknet] settle_match failed: ${err?.message || err}`);
   }
 }
 
@@ -379,7 +395,11 @@ export async function faucetMintTokens(
       recipientAddress,
       amount,
     ]);
-    await getProvider().waitForTransaction(result.transaction_hash);
+    await withTimeout(
+      getProvider().waitForTransaction(result.transaction_hash),
+      ON_CHAIN_TIMEOUT_MS,
+      `waitForTransaction(mint_to ${result.transaction_hash.slice(0, 16)}...)`
+    );
     console.log(`[Starknet] Faucet minted ${amount} ${symbol} to ${recipientAddress}: ${result.transaction_hash}`);
     return result.transaction_hash;
   } catch (err: any) {

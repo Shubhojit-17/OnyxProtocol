@@ -3,7 +3,6 @@ import { wsManager } from "../websocket/manager.js";
 import {
   generateCommitmentHash,
   generateProofId,
-  generateTxHash,
   sleep,
   randomInt,
   shortOrderId,
@@ -26,11 +25,24 @@ let txQueuePromise = Promise.resolve<any>(undefined);
 
 /**
  * Queue an on-chain operation so they run sequentially (avoids nonce conflicts).
+ * Includes a timeout to prevent the queue from blocking forever.
  */
+const TX_QUEUE_TIMEOUT_MS = 90_000; // 90 seconds max per queued Starknet tx
+
 function queueOnChainTx<T>(fn: () => Promise<T>): Promise<T> {
   const p = txQueuePromise.then(fn, fn); // run even if previous fails
   txQueuePromise = p.catch(() => {}); // swallow errors in chain
-  return p;
+
+  // Wrap with timeout to prevent queue from blocking forever
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("[queueOnChainTx] Operation timed out after 90s"));
+    }, TX_QUEUE_TIMEOUT_MS);
+    p.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
 }
 
 /**
@@ -314,8 +326,11 @@ async function runMatcherInner() {
 }
 
 /**
- * Fire-and-forget proof pipeline wrapper with error recovery and concurrency lock.
+ * Fire-and-forget proof pipeline wrapper with failure handling and token refund.
+ * If any on-chain step fails, the match is marked FAILED and locked tokens are refunded.
  */
+const PIPELINE_TIMEOUT_MS = 180_000; // 3 minutes max for entire pipeline
+
 function runProofPipeline(matchId: string) {
   if (inFlightMatches.has(matchId)) {
     console.log(`[ProofPipeline] Skipping ${matchId} — already in-flight`);
@@ -323,30 +338,37 @@ function runProofPipeline(matchId: string) {
   }
   inFlightMatches.add(matchId);
 
-  simulateProofGeneration(matchId)
+  // Wrap the pipeline with an overall timeout
+  const pipelineWithTimeout = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Pipeline timed out after ${PIPELINE_TIMEOUT_MS / 1000}s`));
+    }, PIPELINE_TIMEOUT_MS);
+    executeProofPipeline(matchId).then(
+      () => { clearTimeout(timer); resolve(); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+
+  pipelineWithTimeout
     .catch(async (err) => {
-      console.error(`[ProofPipeline] FAILED for match ${matchId}:`, err);
+      console.error(`[ProofPipeline] FAILED for match ${matchId}:`, err?.message || err);
+
       try {
-        // Reset match status
-        await prisma.match.update({
+        // Check if already settled (race condition guard)
+        const currentMatch = await prisma.match.findUnique({
           where: { id: matchId },
-          data: { status: "PENDING" },
+          include: { settlement: true },
         });
-        // Reset proof status
-        await prisma.proof.update({
-          where: { matchId },
-          data: { proofStatus: "PENDING", proofId: "" },
-        }).catch(() => {});
-        // Reset order statuses so pipeline can be retried
-        const match = await prisma.match.findUnique({ where: { id: matchId } });
-        if (match) {
-          await prisma.orderCommitment.updateMany({
-            where: { id: { in: [match.buyOrderId, match.sellOrderId] } },
-            data: { status: "MATCHED" },
-          });
+
+        if (currentMatch?.status === "SETTLED" || currentMatch?.settlement) {
+          console.log(`[ProofPipeline] Match ${matchId} settled despite error, skipping failure handling`);
+          return;
         }
+
+        // ── FAIL the match and REFUND locked tokens ──
+        await failMatchAndRefund(matchId, err?.message || "Pipeline execution failed");
       } catch (e) {
-        console.error("[ProofPipeline] Could not reset match status:", e);
+        console.error("[ProofPipeline] Could not handle failure for match:", matchId, e);
       }
     })
     .finally(() => {
@@ -355,26 +377,123 @@ function runProofPipeline(matchId: string) {
 }
 
 /**
- * Proof generation pipeline: PENDING → PROVING → GENERATED → VERIFIED → SETTLED
- * When Starknet is enabled, this submits commitments, records match, and settles on-chain.
- * When Starknet is not available, it uses simulated settlement with clearly marked fake tx hashes.
+ * Fail a match and refund locked tokens back to both users' shielded balances.
  */
-async function simulateProofGeneration(matchId: string) {
+async function failMatchAndRefund(matchId: string, reason: string) {
+  const match = await prisma.match.findUnique({
+    where: { id: matchId },
+    include: { buyOrder: true, sellOrder: true },
+  });
+  if (!match) return;
+
+  // Mark match as FAILED
+  await prisma.match.update({
+    where: { id: matchId },
+    data: { status: "FAILED" },
+  });
+
+  // Mark proof as FAILED
+  await prisma.proof.updateMany({
+    where: { matchId },
+    data: { proofStatus: "FAILED" },
+  });
+
+  // Mark orders as CANCELLED (failed)
+  await prisma.orderCommitment.updateMany({
+    where: { id: { in: [match.buyOrderId, match.sellOrderId] } },
+    data: { status: "CANCELLED" },
+  });
+
+  // ── Refund locked balances ──
+  const buyOrder = match.buyOrder;
+  const sellOrder = match.sellOrder;
+  const fillAmount = parseFloat(match.amount) || Math.min(buyOrder.amount, sellOrder.amount);
+  const tradePrice = buyOrder.price;
+
+  // Buyer: locked (fillAmount * price) of assetIn → return to shielded
+  const buyerLockAsset = buyOrder.assetIn;
+  const buyerLockAmount = fillAmount * tradePrice;
+
+  await prisma.vaultBalance.update({
+    where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyerLockAsset } },
+    data: {
+      lockedBalance: { decrement: buyerLockAmount },
+      shieldedBalance: { increment: buyerLockAmount },
+    },
+  }).catch((e) => console.error(`[Refund] Could not refund buyer ${buyOrder.userId}:`, e));
+
+  // Seller: locked fillAmount of assetIn → return to shielded
+  const sellerLockAsset = sellOrder.assetIn;
+  const sellerLockAmount = fillAmount;
+
+  await prisma.vaultBalance.update({
+    where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: sellerLockAsset } },
+    data: {
+      lockedBalance: { decrement: sellerLockAmount },
+      shieldedBalance: { increment: sellerLockAmount },
+    },
+  }).catch((e) => console.error(`[Refund] Could not refund seller ${sellOrder.userId}:`, e));
+
+  console.log(`[Refund] Match ${matchId} failed — refunded ${buyerLockAmount} ${buyerLockAsset} to buyer, ${sellerLockAmount} ${sellerLockAsset} to seller`);
+
+  // Activity event
+  await prisma.activityEvent.create({
+    data: {
+      type: "TRADE_FAILED",
+      message: `Trade failed: ${reason.slice(0, 100)}. Tokens refunded to both parties.`,
+      metadata: JSON.stringify({ matchId, reason }),
+    },
+  });
+
+  // WebSocket notifications
+  wsManager.emit("match:failed", {
+    matchId,
+    reason,
+    status: "FAILED",
+    refunded: true,
+  });
+
+  wsManager.emit("vault:updated", {
+    matchId,
+    message: "Tokens refunded after failed trade",
+  });
+
+  wsManager.emit("activity:new", {
+    type: "TRADE_FAILED",
+    message: `Trade failed — tokens refunded to both parties`,
+  });
+}
+
+/**
+ * Proof + settlement pipeline: PENDING → PROVING → GENERATED → VERIFIED → SETTLED
+ * All on-chain steps are mandatory. If any step fails, the error propagates up
+ * and the caller (runProofPipeline) will fail the match and refund tokens.
+ */
+async function executeProofPipeline(matchId: string) {
   console.log(`[ProofPipeline] Starting for match ${matchId}`);
 
   await sleep(500);
 
-  // ── Step 1: PROVING — Submit commitments on-chain ──
+  // ── Step 1: PROVING — Submit commitments & record match on-chain ──
   const match = await prisma.match.findUnique({
     where: { id: matchId },
     include: { buyOrder: true, sellOrder: true },
   });
   if (!match) throw new Error(`Match ${matchId} not found`);
 
-  // Guard: if match is already settled or being processed, skip
+  // Guard: if match is already settled, skip
   if (match.status === "SETTLED") {
     console.log(`[ProofPipeline] Match ${matchId} already settled, skipping`);
     return;
+  }
+  // Guard: if match already failed, skip
+  if (match.status === "FAILED") {
+    console.log(`[ProofPipeline] Match ${matchId} already failed, skipping`);
+    return;
+  }
+
+  if (!isStarknetEnabled()) {
+    throw new Error("Starknet is not configured — on-chain settlement is required");
   }
 
   await prisma.match.update({
@@ -390,79 +509,66 @@ async function simulateProofGeneration(matchId: string) {
   wsManager.emit("proof:generating", { matchId, status: "PROVING" });
   console.log(`[ProofPipeline] ${matchId} → PROVING`);
 
-  // Submit buy order commitment on-chain (if not already submitted)
   const buyOrder = match.buyOrder;
   const sellOrder = match.sellOrder;
-  
-  if (isStarknetEnabled()) {
-    // Submit buy commitment on-chain (queued to avoid nonce conflicts)
-    if (!buyOrder.onChainId) {
-      console.log(`[ProofPipeline] Submitting buy commitment on-chain for order ${buyOrder.id.slice(0, 8)}...`);
-      const buyResult = await queueOnChainTx(() => submitCommitmentOnChain(
-        buyOrder.commitmentHash,
-        buyOrder.assetIn,
-        buyOrder.assetOut,
-        buyOrder.amountEncrypted || "0x0",
-        buyOrder.priceEncrypted || "0x0"
-      ));
-      if (buyResult) {
-        await prisma.orderCommitment.update({
-          where: { id: buyOrder.id },
-          data: { onChainId: buyResult.onChainId, onChainTxHash: buyResult.txHash },
-        });
-        buyOrder.onChainId = buyResult.onChainId;
-        (buyOrder as any).onChainTxHash = buyResult.txHash;
-        console.log(`[ProofPipeline] Buy commitment on-chain: id=${buyResult.onChainId}, tx=${buyResult.txHash.slice(0, 16)}...`);
-      } else {
-        console.warn(`[ProofPipeline] Buy commitment on-chain submission returned null`);
-      }
-    }
 
-    // Submit sell commitment on-chain
-    if (!sellOrder.onChainId) {
-      console.log(`[ProofPipeline] Submitting sell commitment on-chain for order ${sellOrder.id.slice(0, 8)}...`);
-      const sellResult = await queueOnChainTx(() => submitCommitmentOnChain(
-        sellOrder.commitmentHash,
-        sellOrder.assetIn,
-        sellOrder.assetOut,
-        sellOrder.amountEncrypted || "0x0",
-        sellOrder.priceEncrypted || "0x0"
-      ));
-      if (sellResult) {
-        await prisma.orderCommitment.update({
-          where: { id: sellOrder.id },
-          data: { onChainId: sellResult.onChainId, onChainTxHash: sellResult.txHash },
-        });
-        sellOrder.onChainId = sellResult.onChainId;
-        (sellOrder as any).onChainTxHash = sellResult.txHash;
-        console.log(`[ProofPipeline] Sell commitment on-chain: id=${sellResult.onChainId}, tx=${sellResult.txHash.slice(0, 16)}...`);
-      } else {
-        console.warn(`[ProofPipeline] Sell commitment on-chain submission returned null`);
-      }
-    }
-
-    // Record match on-chain
-    if (buyOrder.onChainId && sellOrder.onChainId && !match.onChainMatchId) {
-      console.log(`[ProofPipeline] Recording match on-chain: buy=${buyOrder.onChainId}, sell=${sellOrder.onChainId}`);
-      const fillAmount = match.amount || String(Math.min(buyOrder.amount, sellOrder.amount));
-      const matchResult = await queueOnChainTx(() => recordMatchOnChain(
-        buyOrder.onChainId!,
-        sellOrder.onChainId!,
-        "0x" + Buffer.from(fillAmount).toString("hex").slice(0, 62)
-      ));
-      if (matchResult) {
-        await prisma.match.update({
-          where: { id: matchId },
-          data: { onChainMatchId: matchResult.onChainMatchId, onChainTxHash: matchResult.txHash },
-        });
-        (match as any).onChainMatchId = matchResult.onChainMatchId;
-        (match as any).onChainTxHash = matchResult.txHash;
-        console.log(`[ProofPipeline] Match recorded on-chain: matchId=${matchResult.onChainMatchId}, tx=${matchResult.txHash.slice(0, 16)}...`);
-      }
-    }
+  // Submit buy commitment on-chain (throws on failure)
+  if (!buyOrder.onChainId) {
+    console.log(`[ProofPipeline] Submitting buy commitment on-chain for order ${buyOrder.id.slice(0, 8)}...`);
+    const buyResult = await queueOnChainTx(() => submitCommitmentOnChain(
+      buyOrder.commitmentHash,
+      buyOrder.assetIn,
+      buyOrder.assetOut,
+      buyOrder.amountEncrypted || "0x0",
+      buyOrder.priceEncrypted || "0x0"
+    ));
+    await prisma.orderCommitment.update({
+      where: { id: buyOrder.id },
+      data: { onChainId: buyResult.onChainId, onChainTxHash: buyResult.txHash },
+    });
+    buyOrder.onChainId = buyResult.onChainId;
+    (buyOrder as any).onChainTxHash = buyResult.txHash;
+    console.log(`[ProofPipeline] Buy commitment on-chain: id=${buyResult.onChainId}, tx=${buyResult.txHash.slice(0, 16)}...`);
   }
 
-  // ── Step 2: GENERATED — Proof data ──
+  // Submit sell commitment on-chain (throws on failure)
+  if (!sellOrder.onChainId) {
+    console.log(`[ProofPipeline] Submitting sell commitment on-chain for order ${sellOrder.id.slice(0, 8)}...`);
+    const sellResult = await queueOnChainTx(() => submitCommitmentOnChain(
+      sellOrder.commitmentHash,
+      sellOrder.assetIn,
+      sellOrder.assetOut,
+      sellOrder.amountEncrypted || "0x0",
+      sellOrder.priceEncrypted || "0x0"
+    ));
+    await prisma.orderCommitment.update({
+      where: { id: sellOrder.id },
+      data: { onChainId: sellResult.onChainId, onChainTxHash: sellResult.txHash },
+    });
+    sellOrder.onChainId = sellResult.onChainId;
+    (sellOrder as any).onChainTxHash = sellResult.txHash;
+    console.log(`[ProofPipeline] Sell commitment on-chain: id=${sellResult.onChainId}, tx=${sellResult.txHash.slice(0, 16)}...`);
+  }
+
+  // Record match on-chain (throws on failure)
+  if (!match.onChainMatchId) {
+    console.log(`[ProofPipeline] Recording match on-chain: buy=${buyOrder.onChainId}, sell=${sellOrder.onChainId}`);
+    const fillAmount = match.amount || String(Math.min(buyOrder.amount, sellOrder.amount));
+    const matchResult = await queueOnChainTx(() => recordMatchOnChain(
+      buyOrder.onChainId!,
+      sellOrder.onChainId!,
+      "0x" + Buffer.from(fillAmount).toString("hex").slice(0, 62)
+    ));
+    await prisma.match.update({
+      where: { id: matchId },
+      data: { onChainMatchId: matchResult.onChainMatchId, onChainTxHash: matchResult.txHash },
+    });
+    (match as any).onChainMatchId = matchResult.onChainMatchId;
+    (match as any).onChainTxHash = matchResult.txHash;
+    console.log(`[ProofPipeline] Match recorded on-chain: matchId=${matchResult.onChainMatchId}, tx=${matchResult.txHash.slice(0, 16)}...`);
+  }
+
+  // ── Step 2: GENERATED — ZK Proof data ──
   await sleep(randomInt(800, 1500));
 
   const proofId = generateProofId();
@@ -479,9 +585,9 @@ async function simulateProofGeneration(matchId: string) {
         circuit: "onyx_dark_pool_v1",
         prover: "stone-prover",
         timestamp: new Date().toISOString(),
-        onChainMatchId: (match as any).onChainMatchId || null,
-        buyOnChainId: buyOrder.onChainId || null,
-        sellOnChainId: sellOrder.onChainId || null,
+        onChainMatchId: (match as any).onChainMatchId,
+        buyOnChainId: buyOrder.onChainId,
+        sellOnChainId: sellOrder.onChainId,
       }),
     },
   });
@@ -530,7 +636,7 @@ async function simulateProofGeneration(matchId: string) {
   });
   console.log(`[ProofPipeline] ${matchId} → VERIFIED`);
 
-  // ── Step 4: SETTLEMENT ──
+  // ── Step 4: SETTLEMENT — on-chain settlement (mandatory) ──
   await settleMatch(matchId, proofId);
 }
 
@@ -563,150 +669,74 @@ async function runSettlementOnly(matchId: string) {
 }
 
 /**
- * Settlement logic: handles balance transfers and on-chain settlement.
+ * Settlement logic: handles on-chain settlement and balance transfers.
  * Uses the match's fill amount (not raw order amounts) for correct partial fill handling.
- * When Starknet is enabled, calls settle_match on-chain using the real on-chain match ID.
+ * All settlement is strictly on-chain — no simulation. Throws on failure.
  */
 async function settleMatch(matchId: string, proofId: string) {
   await sleep(randomInt(300, 800));
 
-  // Fetch match with on-chain IDs
+  // Fetch match with orders
   const matchData = await prisma.match.findUnique({
     where: { id: matchId },
     include: { buyOrder: true, sellOrder: true },
   });
   if (!matchData) throw new Error(`Match ${matchId} not found for settlement`);
 
-  let txHash: string;
   const gasUsed = randomInt(120000, 180000).toLocaleString();
-  let network = "starknet-sepolia";
+  const network = "starknet-sepolia";
+  let txHash: string;
 
-  // Try real Starknet settlement
-  if (isStarknetEnabled() && matchData.onChainMatchId) {
-    console.log(`[Settlement] Settling on-chain: matchId=${matchData.onChainMatchId}, proof=${proofId.slice(0, 16)}...`);
-    const onChainTxHash = await queueOnChainTx(() => settleMatchOnChain(matchData.onChainMatchId!, proofId));
-    if (onChainTxHash) {
-      txHash = onChainTxHash;
-      console.log(`[Settlement] Real Starknet tx: ${getTxUrl(txHash)}`);
-    } else {
-      throw new Error(`On-chain settlement returned null for match ${matchId}`);
-    }
-  } else if (isStarknetEnabled() && !matchData.onChainMatchId) {
-    // Starknet is enabled but we don't have an on-chain match ID
-    // This means the commitment/match recording step failed — try the full flow now
-    console.warn(`[Settlement] No on-chain match ID for ${matchId}, attempting full on-chain flow`);
-    
-    const buyOrder = matchData.buyOrder;
-    const sellOrder = matchData.sellOrder;
-    
-    // Submit commitments if needed (queued)
-    if (!buyOrder.onChainId) {
-      const buyResult = await queueOnChainTx(() => submitCommitmentOnChain(
-        buyOrder.commitmentHash, buyOrder.assetIn, buyOrder.assetOut,
-        buyOrder.amountEncrypted || "0x0", buyOrder.priceEncrypted || "0x0"
-      ));
-      if (buyResult) {
-        await prisma.orderCommitment.update({
-          where: { id: buyOrder.id },
-          data: { onChainId: buyResult.onChainId, onChainTxHash: buyResult.txHash },
-        });
-        buyOrder.onChainId = buyResult.onChainId;
-      }
-    }
-    if (!sellOrder.onChainId) {
-      const sellResult = await queueOnChainTx(() => submitCommitmentOnChain(
-        sellOrder.commitmentHash, sellOrder.assetIn, sellOrder.assetOut,
-        sellOrder.amountEncrypted || "0x0", sellOrder.priceEncrypted || "0x0"
-      ));
-      if (sellResult) {
-        await prisma.orderCommitment.update({
-          where: { id: sellOrder.id },
-          data: { onChainId: sellResult.onChainId, onChainTxHash: sellResult.txHash },
-        });
-        sellOrder.onChainId = sellResult.onChainId;
-      }
-    }
-    
-    // Record match on-chain (queued)
-    let onChainMatchId: number | null = null;
-    if (buyOrder.onChainId && sellOrder.onChainId) {
-      const fillAmount = matchData.amount || String(Math.min(buyOrder.amount, sellOrder.amount));
-      const matchResult = await queueOnChainTx(() => recordMatchOnChain(
-        buyOrder.onChainId!, sellOrder.onChainId!,
-        "0x" + Buffer.from(fillAmount).toString("hex").slice(0, 62)
-      ));
-      if (matchResult) {
-        onChainMatchId = matchResult.onChainMatchId;
-        await prisma.match.update({
-          where: { id: matchId },
-          data: { onChainMatchId: matchResult.onChainMatchId, onChainTxHash: matchResult.txHash },
-        });
-      }
-    }
-    
-    // Now settle on-chain (queued)
-    if (onChainMatchId) {
-      const onChainTxHash = await queueOnChainTx(() => settleMatchOnChain(onChainMatchId!, proofId));
-      if (onChainTxHash) {
-        txHash = onChainTxHash;
-        console.log(`[Settlement] Real Starknet tx (late flow): ${getTxUrl(txHash)}`);
-      } else {
-        throw new Error(`On-chain settlement (late flow) returned null for match ${matchId}`);
-      }
-    } else {
-      throw new Error(`Could not get on-chain match ID for match ${matchId} — commitment submissions may have failed`);
-    }
-  } else {
-    // Starknet not enabled — simulated settlement
-    txHash = generateTxHash();
-    network = "starknet-sepolia (simulated)";
+  // On-chain settlement is mandatory
+  if (!matchData.onChainMatchId) {
+    throw new Error(`No on-chain match ID for ${matchId} — cannot settle without on-chain recording`);
   }
 
-  if (matchData) {
-    const buyOrder = matchData.buyOrder;
-    const sellOrder = matchData.sellOrder;
+  console.log(`[Settlement] Settling on-chain: matchId=${matchData.onChainMatchId}, proof=${proofId.slice(0, 16)}...`);
+  txHash = await queueOnChainTx(() => settleMatchOnChain(matchData.onChainMatchId!, proofId));
+  console.log(`[Settlement] Starknet tx confirmed: ${getTxUrl(txHash)}`);
 
-    // ── Use the match's fill amount for balance calculations ──
-    // For partial fills, the order's amount was already updated to fillAmount
-    const fillAmount = parseFloat(matchData.amount) || Math.min(buyOrder.amount, sellOrder.amount);
-    const tradePrice = buyOrder.price;
+  // ── Balance transfers ──
+  const buyOrder = matchData.buyOrder;
+  const sellOrder = matchData.sellOrder;
+  const fillAmount = parseFloat(matchData.amount) || Math.min(buyOrder.amount, sellOrder.amount);
+  const tradePrice = buyOrder.price;
 
-    // --- Buyer side ---
-    // Buyer locked quote asset (assetIn). Unlock fillAmount * price, credit fillAmount of assetOut.
-    const buyerLockedAsset = buyOrder.assetIn;
-    const buyerUnlockAmount = fillAmount * tradePrice;
+  // --- Buyer side ---
+  // Buyer locked quote asset (assetIn). Unlock fillAmount * price, credit fillAmount of assetOut.
+  const buyerLockedAsset = buyOrder.assetIn;
+  const buyerUnlockAmount = fillAmount * tradePrice;
 
-    await prisma.vaultBalance.upsert({
-      where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyerLockedAsset } },
-      update: { lockedBalance: { decrement: buyerUnlockAmount } },
-      create: { userId: buyOrder.userId, assetSymbol: buyerLockedAsset, publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
-    });
+  await prisma.vaultBalance.upsert({
+    where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyerLockedAsset } },
+    update: { lockedBalance: { decrement: buyerUnlockAmount } },
+    create: { userId: buyOrder.userId, assetSymbol: buyerLockedAsset, publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
+  });
 
-    await prisma.vaultBalance.upsert({
-      where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyOrder.assetOut } },
-      update: { shieldedBalance: { increment: fillAmount } },
-      create: { userId: buyOrder.userId, assetSymbol: buyOrder.assetOut, publicBalance: 0, shieldedBalance: fillAmount, lockedBalance: 0 },
-    });
+  await prisma.vaultBalance.upsert({
+    where: { userId_assetSymbol: { userId: buyOrder.userId, assetSymbol: buyOrder.assetOut } },
+    update: { shieldedBalance: { increment: fillAmount } },
+    create: { userId: buyOrder.userId, assetSymbol: buyOrder.assetOut, publicBalance: 0, shieldedBalance: fillAmount, lockedBalance: 0 },
+  });
 
-    // --- Seller side ---
-    // Seller locked base asset (assetIn). Unlock fillAmount, credit fillAmount * price of assetOut.
-    const sellerLockedAsset = sellOrder.assetIn;
-    const sellerUnlockAmount = fillAmount;
-    const sellerReceives = fillAmount * tradePrice;
+  // --- Seller side ---
+  // Seller locked base asset (assetIn). Unlock fillAmount, credit fillAmount * price of assetOut.
+  const sellerLockedAsset = sellOrder.assetIn;
+  const sellerUnlockAmount = fillAmount;
+  const sellerReceives = fillAmount * tradePrice;
 
-    await prisma.vaultBalance.upsert({
-      where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: sellerLockedAsset } },
-      update: { lockedBalance: { decrement: sellerUnlockAmount } },
-      create: { userId: sellOrder.userId, assetSymbol: sellerLockedAsset, publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
-    });
+  await prisma.vaultBalance.upsert({
+    where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: sellerLockedAsset } },
+    update: { lockedBalance: { decrement: sellerUnlockAmount } },
+    create: { userId: sellOrder.userId, assetSymbol: sellerLockedAsset, publicBalance: 0, shieldedBalance: 0, lockedBalance: 0 },
+  });
 
-    const paymentAsset = sellOrder.assetOut;
-    await prisma.vaultBalance.upsert({
-      where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: paymentAsset } },
-      update: { shieldedBalance: { increment: sellerReceives } },
-      create: { userId: sellOrder.userId, assetSymbol: paymentAsset, publicBalance: 0, shieldedBalance: sellerReceives, lockedBalance: 0 },
-    });
-  }
+  const paymentAsset = sellOrder.assetOut;
+  await prisma.vaultBalance.upsert({
+    where: { userId_assetSymbol: { userId: sellOrder.userId, assetSymbol: paymentAsset } },
+    update: { shieldedBalance: { increment: sellerReceives } },
+    create: { userId: sellOrder.userId, assetSymbol: paymentAsset, publicBalance: 0, shieldedBalance: sellerReceives, lockedBalance: 0 },
+  });
 
   await prisma.settlementTx.create({
     data: {
@@ -722,12 +752,10 @@ async function settleMatch(matchId: string, proofId: string) {
     data: { status: "SETTLED" },
   });
 
-  if (matchData) {
-    await prisma.orderCommitment.updateMany({
-      where: { id: { in: [matchData.buyOrderId, matchData.sellOrderId] } },
-      data: { status: "SETTLED" },
-    });
-  }
+  await prisma.orderCommitment.updateMany({
+    where: { id: { in: [matchData.buyOrderId, matchData.sellOrderId] } },
+    data: { status: "SETTLED" },
+  });
 
   await prisma.activityEvent.create({
     data: {
