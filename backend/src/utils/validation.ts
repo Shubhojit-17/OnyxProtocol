@@ -46,7 +46,7 @@ export const createOrderSchema = z.object({
   commitmentHash: z.string().optional(),
   expiresAt: z.string().datetime().optional(),
   allowPartialFill: z.boolean().optional().default(true),
-  allowCrossPair: z.boolean().optional().default(false),
+  allowCrossPair: z.boolean().optional().default(true),
 }).refine((data) => data.assetIn !== data.assetOut, {
   message: "assetIn and assetOut must be different",
   path: ["assetOut"],

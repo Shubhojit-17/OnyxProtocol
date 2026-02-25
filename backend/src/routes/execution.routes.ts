@@ -5,12 +5,19 @@ import {
   getMatches,
   getExecutionStats,
 } from "../services/execution.service.js";
+import prisma from "../db/prisma.js";
 
 const router = Router();
 
 // POST /api/matcher/run
 router.post("/matcher/run", async (_req: Request, res: Response) => {
   try {
+    // Ensure all CREATED orders allow cross-pair (migrates legacy orders)
+    await prisma.orderCommitment.updateMany({
+      where: { status: "CREATED", allowCrossPair: false },
+      data: { allowCrossPair: true },
+    });
+
     const result = await runMatcher();
     res.json(result);
   } catch (err: any) {

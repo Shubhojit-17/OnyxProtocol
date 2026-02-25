@@ -50,7 +50,7 @@ export default function TradePage() {
   const [expiry, setExpiry] = useState("24h");
   const [privacyLevel, setPrivacyLevel] = useState(100);
   const [partialFill, setPartialFill] = useState(true);
-  const [crossPair, setCrossPair] = useState(false);
+  const [crossPair, setCrossPair] = useState(true);
   const [complianceExport, setComplianceExport] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [proofState, setProofState] = useState<"idle" | "generating" | "complete">("idle");

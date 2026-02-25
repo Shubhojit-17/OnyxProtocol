@@ -76,7 +76,7 @@ model OrderCommitment {
   priceEncrypted   String      @default("")
   status           OrderStatus @default(CREATED)
   allowPartialFill Boolean     @default(true)
-  allowCrossPair   Boolean     @default(false) // Allow matching across different quote assets via conversion
+  allowCrossPair   Boolean     @default(true) // Allow matching across different quote assets via conversion
   originalAmount   Float?      // Original amount before partial fill
   parentOrderId    String?     // Link to parent order (for remainder orders)
   onChainId        Int?        // On-chain commitment ID from Starknet contract

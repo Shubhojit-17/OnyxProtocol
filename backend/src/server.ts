@@ -105,9 +105,17 @@ server.listen(PORT, "0.0.0.0", () => {
   // Startup diagnostics: log open orders count
   prisma.orderCommitment
     .count({ where: { status: "CREATED" } })
-    .then((openCount) => {
+    .then(async (openCount) => {
       if (openCount > 0) {
         console.log(`  ⚠️  ${openCount} open order(s) in database from previous session`);
+      }
+      // Migrate legacy orders: enable cross-pair matching for orders created before the feature
+      const migrated = await prisma.orderCommitment.updateMany({
+        where: { status: "CREATED", allowCrossPair: false },
+        data: { allowCrossPair: true },
+      });
+      if (migrated.count > 0) {
+        console.log(`  🔄 Migrated ${migrated.count} order(s) to allow cross-pair matching`);
       }
     })
     .catch(() => {});

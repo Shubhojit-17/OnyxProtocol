@@ -291,7 +291,7 @@ async function runMatcherInner() {
 
   // Re-fetch remaining CREATED orders (some may have been matched in Phase 1)
   const remainingOrders = await prisma.orderCommitment.findMany({
-    where: { status: "CREATED", allowCrossPair: true },
+    where: { status: "CREATED" },
     orderBy: { createdAt: "asc" },
   });
 
@@ -334,6 +334,9 @@ async function runMatcherInner() {
 
       // 3. No self-trades
       if (freshBuy.userId === freshSell.userId) continue;
+
+      // 4. Both parties must allow cross-pair matching (opt-out respected)
+      if (!freshBuy.allowCrossPair || !freshSell.allowCrossPair) continue;
 
       // Get market conversion rate: how much sellerWants per 1 buyerPays
       // E.g., buyerPays=oETH, sellerWants=oSEP → rate = oETH_USD / oSEP_USD

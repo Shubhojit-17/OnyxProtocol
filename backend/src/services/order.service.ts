@@ -62,7 +62,7 @@ export async function createOrder(params: {
       priceEncrypted: "████████",
       status: "CREATED",
       allowPartialFill: params.allowPartialFill ?? true,
-      allowCrossPair: params.allowCrossPair ?? false,
+      allowCrossPair: params.allowCrossPair ?? true,
       expiresAt: params.expiresAt ? new Date(params.expiresAt) : null,
     },
   });
