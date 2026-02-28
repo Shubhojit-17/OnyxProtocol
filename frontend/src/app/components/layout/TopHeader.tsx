@@ -1,8 +1,9 @@
-import { Search, Bell, Sun, Moon, Wifi, Copy, Check, LogOut } from "lucide-react";
+import { Search, Bell, Sun, Wifi, Copy, Check, LogOut } from "lucide-react";
 import { useState, useCallback } from "react";
 import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import { useWallet } from "../../hooks/useWallet";
+import { useSettings } from "../../hooks/useSettings";
 import { useWebSocket } from "../../hooks/useWebSocket";
 
 interface Notification {
@@ -12,16 +13,31 @@ interface Notification {
 }
 
 export default function TopHeader() {
-  const [darkMode, setDarkMode] = useState(true);
   const [showNotifs, setShowNotifs] = useState(false);
   const [copied, setCopied] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const { walletAddress, isConnected, disconnect } = useWallet();
+  const { settings: { notifications: notifPrefs } } = useSettings();
   const navigate = useNavigate();
 
   // Listen for WebSocket events and push live notifications
+  // Filter based on notification preferences from settings
   useWebSocket(
     useCallback((event: { type: string; data: any }) => {
+      // Map event types to notification preference keys
+      const prefMap: Record<string, keyof typeof notifPrefs> = {
+        "proof:verified": "proofVerified",
+        "proof:generating": "proofVerified",
+        "order:matched": "orderMatched",
+        "order:created": "orderMatched",
+        "vault:updated": "vaultActivity",
+        "settlement:confirmed": "vaultActivity",
+      };
+
+      const prefKey = prefMap[event.type];
+      // If there's a mapped preference and it's disabled, skip this notification
+      if (prefKey && !notifPrefs[prefKey]) return;
+
       const typeMap: Record<string, string> = {
         "order:created": "New order committed",
         "order:matched": "Order matched in pool",
@@ -37,7 +53,7 @@ export default function TopHeader() {
         type: event.type.includes("verified") || event.type.includes("confirmed") ? "success" : "info",
       };
       setNotifications((prev) => [notif, ...prev].slice(0, 20));
-    }, []),
+    }, [notifPrefs]),
     ["order:created", "order:matched", "proof:generating", "proof:verified", "settlement:confirmed", "vault:updated"]
   );
 
@@ -176,14 +192,11 @@ export default function TopHeader() {
 
         {/* Theme toggle */}
         <button
-          onClick={() => setDarkMode(!darkMode)}
+          onClick={() => navigate("/app/settings")}
           className="p-2 rounded-lg hover:bg-white/[0.04] transition-colors"
+          title="Settings"
         >
-          {darkMode ? (
-            <Sun className="w-4 h-4 text-[#64748b]" />
-          ) : (
-            <Moon className="w-4 h-4 text-[#64748b]" />
-          )}
+          <Sun className="w-4 h-4 text-[#64748b]" />
         </button>
       </div>
     </header>

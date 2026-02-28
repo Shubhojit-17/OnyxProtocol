@@ -24,6 +24,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { orderApi, darkPoolApi, dashboardApi } from "../services/api";
 import { useApi } from "../hooks/useApi";
 import { useWallet } from "../hooks/useWallet";
+import { useSettings } from "../hooks/useSettings";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { TRADING_PAIRS } from "../services/starknet.config";
 
@@ -43,8 +44,14 @@ const proofMessages = [
 
 export default function TradePage() {
   const { walletAddress } = useWallet();
+  const { settings: globalSettings } = useSettings();
+
+  // Resolve initial pair index from global settings
+  const defaultPairIdx = TRADING_PAIRS.findIndex(
+    (p) => p.label === globalSettings.defaultPair
+  );
   const [orderType, setOrderType] = useState<"BUY" | "SELL">("BUY");
-  const [selectedPairIdx, setSelectedPairIdx] = useState(0);
+  const [selectedPairIdx, setSelectedPairIdx] = useState(defaultPairIdx >= 0 ? defaultPairIdx : 0);
   const [amount, setAmount] = useState("");
   const [price, setPrice] = useState("");
   const [expiry, setExpiry] = useState("24h");

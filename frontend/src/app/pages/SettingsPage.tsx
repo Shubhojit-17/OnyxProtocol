@@ -13,58 +13,37 @@ import {
   Palette,
   Monitor,
   Terminal,
+  RotateCcw,
 } from "lucide-react";
 import { motion } from "motion/react";
-import { userApi } from "../services/api";
-import { useWallet } from "../hooks/useWallet";
-import { useApi } from "../hooks/useApi";
+import { useSettings } from "../hooks/useSettings";
 
 export default function SettingsPage() {
-  const { walletAddress, user } = useWallet();
-  const [darkMode, setDarkMode] = useState(true);
-  const [designTheme, setDesignTheme] = useState<"institutional" | "shadow">("institutional");
-  const [privacyMode, setPrivacyMode] = useState(true);
-  const [gasPreference, setGasPreference] = useState("Standard");
-  const [relayer, setRelayer] = useState(true);
-  const [defaultPair, setDefaultPair] = useState("STRK / ETH");
-  const [notifications, setNotifications] = useState({
-    proofVerified: true,
-    orderMatched: true,
-    vaultActivity: true,
-    systemUpdates: false,
-  });
+  const {
+    settings,
+    isDirty,
+    updateSetting,
+    updateNotification,
+    saveSettings,
+    revertSettings,
+    saving,
+  } = useSettings();
   const [saved, setSaved] = useState(false);
 
-  // Load settings from user data if available
+  // Revert unsaved changes when the user navigates away from this page
   useEffect(() => {
-    if (user?.settings) {
-      const s = user.settings;
-      if (s.theme) setDarkMode(s.theme === "dark");
-      if (s.designTheme) setDesignTheme(s.designTheme);
-      if (s.defaultPrivacyMode !== undefined) setPrivacyMode(s.defaultPrivacyMode);
-      if (s.gasPreference) setGasPreference(s.gasPreference);
-      if (s.privacyRelayer !== undefined) setRelayer(s.privacyRelayer);
-      if (s.defaultAssetPair) setDefaultPair(s.defaultAssetPair);
-      if (s.notifications) setNotifications(s.notifications);
-    }
-  }, [user?.settings]);
+    return () => {
+      // Cleanup runs when this component unmounts (user leaves settings page)
+      // We call revert to restore the last-saved settings
+      revertSettings();
+    };
+    // We intentionally only want this to run on unmount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSave = async () => {
-    if (!walletAddress) {
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-      return;
-    }
     try {
-      await userApi.updateSettings(walletAddress, {
-        theme: darkMode ? "dark" : "light",
-        designTheme,
-        defaultPrivacyMode: privacyMode,
-        gasPreference,
-        privacyRelayer: relayer,
-        defaultAssetPair: defaultPair,
-        notifications,
-      });
+      await saveSettings();
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
@@ -72,11 +51,32 @@ export default function SettingsPage() {
     }
   };
 
+  const {
+    darkMode,
+    designTheme,
+    privacyMode,
+    gasPreference,
+    relayer,
+    defaultPair,
+    notifications,
+  } = settings;
+
   return (
     <div className="space-y-6 max-w-3xl">
-      <div>
-        <h1 className="text-2xl text-white mb-1">Settings</h1>
-        <p className="text-sm text-[#64748b]">Configure your dashboard preferences and privacy defaults</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl text-white mb-1">Settings</h1>
+          <p className="text-sm text-[#64748b]">Configure your dashboard preferences and privacy defaults</p>
+        </div>
+        {isDirty && (
+          <motion.span
+            initial={{ opacity: 0, x: 10 }}
+            animate={{ opacity: 1, x: 0 }}
+            className="text-xs text-amber-accent px-3 py-1.5 rounded-lg bg-amber-accent/10 border border-amber-accent/20"
+          >
+            Unsaved changes
+          </motion.span>
+        )}
       </div>
 
       {/* Design Theme Selection */}
@@ -91,7 +91,7 @@ export default function SettingsPage() {
         <div className="grid grid-cols-2 gap-4">
           {/* Institutional */}
           <button
-            onClick={() => setDesignTheme("institutional")}
+            onClick={() => updateSetting("designTheme", "institutional")}
             className={`p-4 rounded-xl border text-left transition-all ${
               designTheme === "institutional"
                 ? "bg-cobalt/5 border-cobalt/20 shadow-[0_0_15px_rgba(37,99,235,0.1)]"
@@ -113,7 +113,7 @@ export default function SettingsPage() {
 
           {/* Shadow Hacker */}
           <button
-            onClick={() => setDesignTheme("shadow")}
+            onClick={() => updateSetting("designTheme", "shadow")}
             className={`p-4 rounded-xl border text-left transition-all ${
               designTheme === "shadow"
                 ? "bg-acid-green/5 border-acid-green/20 shadow-[0_0_15px_rgba(74,222,128,0.1)]"
@@ -146,7 +146,7 @@ export default function SettingsPage() {
             </div>
           </div>
           <button
-            onClick={() => setDarkMode(!darkMode)}
+            onClick={() => updateSetting("darkMode", !darkMode)}
             className={`relative w-12 h-6 rounded-full transition-colors ${darkMode ? "bg-cobalt" : "bg-[#334155]"}`}
           >
             <div
@@ -169,7 +169,7 @@ export default function SettingsPage() {
             </div>
           </div>
           <button
-            onClick={() => setPrivacyMode(!privacyMode)}
+            onClick={() => updateSetting("privacyMode", !privacyMode)}
             className={`relative w-12 h-6 rounded-full transition-colors ${
               privacyMode ? "bg-acid-green" : "bg-[#334155]"
             }`}
@@ -200,7 +200,7 @@ export default function SettingsPage() {
           ].map((opt) => (
             <button
               key={opt.level}
-              onClick={() => setGasPreference(opt.level)}
+              onClick={() => updateSetting("gasPreference", opt.level)}
               className={`py-3 px-4 rounded-xl text-left transition-all ${
                 gasPreference === opt.level
                   ? "bg-cobalt/10 text-cobalt border border-cobalt/20"
@@ -225,7 +225,7 @@ export default function SettingsPage() {
             </div>
           </div>
           <button
-            onClick={() => setRelayer(!relayer)}
+            onClick={() => updateSetting("relayer", !relayer)}
             className={`relative w-12 h-6 rounded-full transition-colors ${relayer ? "bg-cobalt" : "bg-[#334155]"}`}
           >
             <div
@@ -249,11 +249,12 @@ export default function SettingsPage() {
         <div className="relative max-w-xs">
           <select
             value={defaultPair}
-            onChange={(e) => setDefaultPair(e.target.value)}
+            onChange={(e) => updateSetting("defaultPair", e.target.value)}
             className="w-full bg-white/[0.03] border border-white/[0.06] rounded-xl px-4 py-3 text-sm text-white appearance-none focus:outline-none focus:border-cobalt/40"
           >
-            <option value="STRK / ETH">STRK / ETH</option>
-            <option value="ETH / STRK">ETH / STRK</option>
+            <option value="STRK / oETH">STRK / oETH</option>
+            <option value="STRK / oSEP">STRK / oSEP</option>
+            <option value="oETH / oSEP">oETH / oSEP</option>
           </select>
           <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#475569] pointer-events-none" />
         </div>
@@ -269,7 +270,7 @@ export default function SettingsPage() {
           </div>
         </div>
         <div className="space-y-4">
-          {[
+          {([
             {
               key: "proofVerified" as const,
               label: "Proof Verified",
@@ -290,19 +291,14 @@ export default function SettingsPage() {
               label: "System Updates",
               desc: "Protocol upgrades and maintenance notices",
             },
-          ].map((notif) => (
+          ]).map((notif) => (
             <div key={notif.key} className="flex items-center justify-between py-2">
               <div>
                 <div className="text-sm text-white">{notif.label}</div>
                 <div className="text-xs text-[#475569]">{notif.desc}</div>
               </div>
               <button
-                onClick={() =>
-                  setNotifications((prev) => ({
-                    ...prev,
-                    [notif.key]: !prev[notif.key],
-                  }))
-                }
+                onClick={() => updateNotification(notif.key, !notifications[notif.key])}
                 className={`relative w-10 h-5 rounded-full transition-colors ${
                   notifications[notif.key] ? "bg-cobalt" : "bg-[#334155]"
                 }`}
@@ -318,28 +314,49 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Save Button */}
-      <motion.button
-        onClick={handleSave}
-        whileTap={{ scale: 0.98 }}
-        className={`w-full py-3.5 rounded-xl transition-all flex items-center justify-center gap-2 text-sm ${
-          saved
-            ? "bg-acid-green/10 text-acid-green border border-acid-green/20"
-            : "bg-cobalt text-white hover:bg-blue-500 shadow-[0_0_20px_rgba(37,99,235,0.3)]"
-        }`}
-      >
-        {saved ? (
-          <>
-            <Check className="w-4 h-4" />
-            Settings Saved
-          </>
-        ) : (
-          <>
-            <Save className="w-4 h-4" />
-            Save Settings
-          </>
+      {/* Action Buttons */}
+      <div className="flex gap-3">
+        {isDirty && (
+          <motion.button
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            onClick={revertSettings}
+            className="px-6 py-3.5 rounded-xl transition-all flex items-center justify-center gap-2 text-sm bg-white/[0.02] text-[#64748b] border border-white/[0.06] hover:text-white hover:border-white/[0.1]"
+          >
+            <RotateCcw className="w-4 h-4" />
+            Discard Changes
+          </motion.button>
         )}
-      </motion.button>
+        <motion.button
+          onClick={handleSave}
+          whileTap={{ scale: 0.98 }}
+          disabled={saving}
+          className={`flex-1 py-3.5 rounded-xl transition-all flex items-center justify-center gap-2 text-sm ${
+            saved
+              ? "bg-acid-green/10 text-acid-green border border-acid-green/20"
+              : isDirty
+                ? "bg-cobalt text-white hover:bg-blue-500 shadow-[0_0_20px_rgba(37,99,235,0.3)]"
+                : "bg-cobalt/50 text-white/50 cursor-default"
+          }`}
+        >
+          {saved ? (
+            <>
+              <Check className="w-4 h-4" />
+              Settings Saved
+            </>
+          ) : saving ? (
+            <>
+              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              Saving...
+            </>
+          ) : (
+            <>
+              <Save className="w-4 h-4" />
+              Save Settings
+            </>
+          )}
+        </motion.button>
+      </div>
     </div>
   );
 }

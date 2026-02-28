@@ -34,6 +34,19 @@ export async function getUserByWallet(walletAddress: string) {
   });
 }
 
+const VALID_SETTINGS_FIELDS = new Set([
+  "darkMode",
+  "designTheme",
+  "privacyMode",
+  "gasPreference",
+  "relayer",
+  "defaultPair",
+  "notifProofVerified",
+  "notifOrderMatched",
+  "notifVaultActivity",
+  "notifSystemUpdates",
+]);
+
 export async function updateUserSettings(
   walletAddress: string,
   settings: Record<string, unknown>
@@ -41,9 +54,17 @@ export async function updateUserSettings(
   const user = await prisma.user.findUnique({ where: { walletAddress } });
   if (!user) throw new Error("User not found");
 
+  // Only allow valid settings fields to be persisted
+  const filtered: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(settings)) {
+    if (VALID_SETTINGS_FIELDS.has(key)) {
+      filtered[key] = value;
+    }
+  }
+
   return prisma.userSettings.upsert({
     where: { userId: user.id },
-    update: settings,
-    create: { userId: user.id, ...settings } as any,
+    update: filtered,
+    create: { userId: user.id, ...filtered } as any,
   });
 }

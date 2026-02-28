@@ -299,8 +299,7 @@ export async function vaultDepositOnChain(
 
   let result;
   try {
-    // skipValidate avoids the wallet's RPC simulation which can timeout on Sepolia
-    result = await account.execute(calls, { skipValidate: true });
+    result = await account.execute(calls);
   } catch (err: any) {
     // Provide user-friendly error messages for common wallet errors
     const msg = err?.message || err?.code || String(err);
@@ -362,8 +361,7 @@ export async function vaultWithdrawOnChain(
 
   let result;
   try {
-    // skipValidate avoids the wallet's RPC simulation which can timeout on Sepolia
-    result = await account.execute(calls, { skipValidate: true });
+    result = await account.execute(calls);
   } catch (err: any) {
     const msg = err?.message || err?.code || String(err);
     if (msg.includes("NOT_FOUND") || msg.includes("Account not found")) {

@@ -22,6 +22,7 @@ import { vaultApi } from "../services/api";
 import { useApi } from "../hooks/useApi";
 import { useMutation } from "../hooks/useApi";
 import { useWallet } from "../hooks/useWallet";
+import { useSettings } from "../hooks/useSettings";
 import { useWebSocket } from "../hooks/useWebSocket";
 import {
   vaultDepositOnChain,
@@ -67,7 +68,10 @@ const actions = [
 
 export default function VaultPage() {
   const { walletAddress, account } = useWallet();
-  const [privacyMode, setPrivacyMode] = useState(false);
+  const { settings: globalSettings } = useSettings();
+  const [privacyOverride, setPrivacyOverride] = useState<boolean | null>(null);
+  const privacyMode = privacyOverride !== null ? privacyOverride : globalSettings.privacyMode;
+  const setPrivacyMode = (val: boolean) => setPrivacyOverride(val);
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [actionAmount, setActionAmount] = useState("");
   const [selectedAsset, setSelectedAsset] = useState("STRK");

@@ -29,7 +29,7 @@ export default function DashboardLayout() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0b14] text-white" style={{ fontFamily: "'Inter', sans-serif" }}>
+    <div className="min-h-screen bg-background text-foreground transition-colors duration-300" style={{ fontFamily: "'Inter', sans-serif" }}>
       <Sidebar />
       <TopHeader />
       <main className="md:ml-[68px] pt-16 pb-20 md:pb-0 min-h-screen">

@@ -49,6 +49,95 @@
   --surface-elevated: #151929;
 }
 
+/* ──── Shadow Hacker design theme (dark neon-green terminal) ──── */
+[data-design-theme="shadow"] {
+  --background: #000000;
+  --foreground: #4ade80;
+  --card: #0a0a0a;
+  --card-foreground: #4ade80;
+  --popover: #0a0a0a;
+  --popover-foreground: #4ade80;
+  --primary: #4ade80;
+  --primary-foreground: #000000;
+  --secondary: #0d1a0d;
+  --secondary-foreground: #4ade80;
+  --muted: #0d1a0d;
+  --muted-foreground: #22c55e;
+  --accent: #0d1a0d;
+  --accent-foreground: #4ade80;
+  --border: rgba(74, 222, 128, 0.12);
+  --input: rgba(74, 222, 128, 0.08);
+  --input-background: #050a05;
+  --switch-background: #1a2e1a;
+  --ring: #4ade80;
+  --chart-1: #4ade80;
+  --chart-2: #22c55e;
+  --chart-3: #16a34a;
+  --chart-4: #86efac;
+  --chart-5: #a7f3d0;
+  --sidebar: #030803;
+  --sidebar-foreground: #4ade80;
+  --sidebar-primary: #4ade80;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: rgba(74, 222, 128, 0.1);
+  --sidebar-accent-foreground: #4ade80;
+  --sidebar-border: rgba(74, 222, 128, 0.08);
+  --sidebar-ring: #4ade80;
+  --cobalt: #4ade80;
+  --cobalt-glow: rgba(74, 222, 128, 0.4);
+  --amber: #22c55e;
+  --surface-glass: rgba(0, 0, 0, 0.6);
+  --surface-elevated: #0a1a0a;
+}
+
+/* ──── Light mode ──── */
+html.light {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #f1f5f9;
+  --accent-foreground: #0f172a;
+  --border: rgba(0, 0, 0, 0.08);
+  --input: rgba(0, 0, 0, 0.06);
+  --input-background: #ffffff;
+  --switch-background: #cbd5e1;
+  --ring: #2563eb;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #0f172a;
+  --sidebar-primary: #2563eb;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(37, 99, 235, 0.08);
+  --sidebar-accent-foreground: #0f172a;
+  --sidebar-border: rgba(0, 0, 0, 0.06);
+  --sidebar-ring: #2563eb;
+  --cobalt: #2563eb;
+  --cobalt-glow: rgba(37, 99, 235, 0.2);
+  --acid-green: #16a34a;
+  --acid-green-glow: rgba(22, 163, 74, 0.2);
+  --amber: #d97706;
+  --surface-glass: rgba(255, 255, 255, 0.6);
+  --surface-elevated: #ffffff;
+}
+
+/* Shadow Hacker + Light mode combo */
+html.light[data-design-theme="shadow"] {
+  --primary: #16a34a;
+  --primary-foreground: #ffffff;
+  --cobalt: #16a34a;
+  --cobalt-glow: rgba(22, 163, 74, 0.2);
+  --ring: #16a34a;
+  --sidebar-primary: #16a34a;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

@@ -26,6 +26,7 @@ import { dashboardApi } from "../services/api";
 import { useApi } from "../hooks/useApi";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useWallet } from "../hooks/useWallet";
+import { useSettings } from "../hooks/useSettings";
 
 const iconMap: Record<string, any> = {
   "Total Vault Balance": Vault,
@@ -43,8 +44,10 @@ const colorMap: Record<string, string> = {
 
 export default function DashboardOverviewPage() {
   const { walletAddress } = useWallet();
+  const { settings: { privacyMode } } = useSettings();
   const [period, setPeriod] = useState("24h");
   const [liveEventIndex, setLiveEventIndex] = useState(0);
+  const blurClass = privacyMode ? "blur-md select-none hover:blur-none transition-all duration-300 cursor-pointer" : "";
 
   const { data, loading, refresh } = useApi(
     () => dashboardApi.getOverview(walletAddress ?? undefined, period),
@@ -127,7 +130,7 @@ export default function DashboardOverviewPage() {
                 {card.change}
               </span>
             </div>
-            <div className="text-xl text-white mb-0.5" style={{ fontFamily: "var(--font-mono)" }}>{card.value}</div>
+            <div className={`text-xl text-white mb-0.5 ${blurClass}`} style={{ fontFamily: "var(--font-mono)" }}>{card.value}</div>
             <div className="flex items-center justify-between">
               <div className="text-xs text-[#475569]">{card.title}</div>
               {card.usd && <div className="text-xs text-[#475569]" style={{ fontFamily: "var(--font-mono)" }}>{card.usd}</div>}
